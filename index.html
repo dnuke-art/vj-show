@@ -1,0 +1,309 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>vj-show player</title>
+<style>
+  html, body { margin:0; height:100%; background:#000; overflow:hidden; cursor:none; }
+  canvas { display:block; width:100vw; height:100vh; }
+  #stats { position:fixed; top:8px; left:8px; color:#0f0; font:12px/1.4 monospace;
+           background:rgba(0,0,0,.6); padding:6px 8px; white-space:pre; display:none; }
+  #err { position:fixed; bottom:8px; left:8px; color:#f66; font:12px monospace;
+         background:rgba(0,0,0,.7); padding:6px 8px; white-space:pre-wrap; max-width:90vw; display:none; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="stats"></div>
+<div id="err"></div>
+<script>
+'use strict';
+// ---------------------------------------------------------------------------
+// vj-show player, first slice.
+// Loads scenes.json, compiles each scene's fragment shader, autopilots through
+// the list with timed crossfades, hot-reloads the list on change.
+// ---------------------------------------------------------------------------
+
+const PRELUDE = `#version 300 es
+precision highp float;
+uniform float u_time;
+uniform vec2  u_resolution;
+uniform float u_seed;
+out vec4 fragColor;
+`;
+
+const VERT = `#version 300 es
+in vec2 a;
+void main(){ gl_Position = vec4(a, 0.0, 1.0); }`;
+
+const COMPOSITE = `#version 300 es
+precision highp float;
+uniform sampler2D texA;
+uniform sampler2D texB;
+uniform float mixAmt;
+uniform vec2 u_resolution;
+out vec4 fragColor;
+void main(){
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  vec4 a = texture(texA, uv);
+  vec4 b = texture(texB, uv);
+  fragColor = mix(a, b, mixAmt);
+}`;
+
+const canvas = document.getElementById('c');
+const statsEl = document.getElementById('stats');
+const errEl = document.getElementById('err');
+const gl = canvas.getContext('webgl2', { antialias:false, alpha:false, powerPreference:'high-performance', preserveDrawingBuffer:false });
+if (!gl) { showErr('WebGL2 not available'); throw new Error('no webgl2'); }
+
+// ---- watchdog -------------------------------------------------------------
+function scheduleReload(why, delayMs){
+  console.warn('[watchdog] reload in', delayMs, 'ms:', why);
+  let n = 0;
+  try { n = +(sessionStorage.getItem('reloads') || 0) + 1; sessionStorage.setItem('reloads', n); } catch(e){}
+  // back off if we are reload-looping
+  const delay = n > 5 ? 60000 : delayMs;
+  setTimeout(() => location.reload(), delay);
+}
+canvas.addEventListener('webglcontextlost', e => { e.preventDefault(); scheduleReload('context lost', 1000); });
+window.addEventListener('error', e => { showErr(String(e.message)); scheduleReload('js error: ' + e.message, 5000); });
+window.addEventListener('unhandledrejection', e => { showErr(String(e.reason)); });
+setTimeout(() => { try { sessionStorage.setItem('reloads', 0); } catch(e){} }, 5*60*1000);
+
+function showErr(msg){ errEl.style.display = 'block'; errEl.textContent = msg; console.error(msg); }
+function clearErr(){ errEl.style.display = 'none'; }
+
+// ---- gl helpers -----------------------------------------------------------
+function compile(type, src){
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+    const log = gl.getShaderInfoLog(s); gl.deleteShader(s);
+    throw new Error(log);
+  }
+  return s;
+}
+const vertShader = compile(gl.VERTEX_SHADER, VERT);
+function link(fragSrc){
+  const p = gl.createProgram();
+  const f = compile(gl.FRAGMENT_SHADER, fragSrc);
+  gl.attachShader(p, vertShader); gl.attachShader(p, f); gl.linkProgram(p);
+  gl.deleteShader(f);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+    const log = gl.getProgramInfoLog(p); gl.deleteProgram(p);
+    throw new Error(log);
+  }
+  return p;
+}
+const quad = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+function makeTarget(w, h){
+  const tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  const fbo = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  return { tex, fbo, w, h };
+}
+function freeTarget(t){ if (!t) return; gl.deleteTexture(t.tex); gl.deleteFramebuffer(t.fbo); }
+
+const compositeProg = link(COMPOSITE);
+const compU = {
+  texA: gl.getUniformLocation(compositeProg, 'texA'),
+  texB: gl.getUniformLocation(compositeProg, 'texB'),
+  mixAmt: gl.getUniformLocation(compositeProg, 'mixAmt'),
+  res: gl.getUniformLocation(compositeProg, 'u_resolution'),
+};
+
+// ---- state ----------------------------------------------------------------
+let config = { crossfade: 3, renderScale: 1, reloadInterval: 5, scenes: [] };
+let configText = '';
+const programs = new Map();   // shaderPath -> { src, prog, uniforms:Map }
+let scenes = [];              // resolved: { name, shader, duration, params, seed }
+let cur = -1, nxt = -1;
+let sceneStart = 0, fadeStart = -1;
+let targetA = null, targetB = null;
+let renderW = 0, renderH = 0;
+
+async function fetchText(url){
+  const r = await fetch(url + (url.includes('?') ? '&' : '?') + 't=' + Date.now(), { cache:'no-store' });
+  if (!r.ok) throw new Error(url + ': ' + r.status);
+  return r.text();
+}
+
+async function loadConfig(){
+  const text = await fetchText('scenes.json');
+  if (text === configText) return false;
+  const cfg = JSON.parse(text);
+  const list = [];
+  for (const s of cfg.scenes || []) {
+    const src = await fetchText(s.shader);
+    const have = programs.get(s.shader);
+    if (!have || have.src !== src) {
+      const prog = link(PRELUDE + src);
+      if (have) gl.deleteProgram(have.prog);
+      programs.set(s.shader, {
+        src, prog,
+        u_time: gl.getUniformLocation(prog, 'u_time'),
+        u_resolution: gl.getUniformLocation(prog, 'u_resolution'),
+        u_seed: gl.getUniformLocation(prog, 'u_seed'),
+        params: new Map(),
+      });
+    }
+    list.push({
+      name: s.name || s.shader,
+      shader: s.shader,
+      duration: +s.duration || 30,
+      params: s.params || {},
+      seed: hashStr(s.name || s.shader) * 100,
+    });
+  }
+  // drop programs no longer referenced
+  for (const [path, p] of programs) {
+    if (!list.some(s => s.shader === path)) { gl.deleteProgram(p.prog); programs.delete(path); }
+  }
+  const prevName = cur >= 0 && scenes[cur] ? scenes[cur].name : null;
+  configText = text;
+  config = { crossfade: +cfg.crossfade || 3, renderScale: +cfg.renderScale || 1,
+             reloadInterval: +cfg.reloadInterval || 5, scenes: cfg.scenes };
+  scenes = list;
+  if (!scenes.length) throw new Error('scenes.json has no scenes');
+  // keep playing the same scene if it survived the reload; else jump
+  const keep = prevName !== null ? scenes.findIndex(s => s.name === prevName) : -1;
+  if (keep >= 0) { cur = keep; }
+  else { cur = 0; nxt = -1; fadeStart = -1; sceneStart = now(); }
+  if (nxt >= scenes.length) { nxt = -1; fadeStart = -1; }
+  resize(true);
+  clearErr();
+  console.log('[config] loaded', scenes.length, 'scenes, renderScale', config.renderScale);
+  return true;
+}
+
+function hashStr(s){ let h = 2166136261; for (const c of s) { h ^= c.charCodeAt(0); h = Math.imul(h, 16777619); } return ((h >>> 0) % 1000) / 1000; }
+function now(){ return performance.now() / 1000; }
+
+// ---- sizing ---------------------------------------------------------------
+function resize(force){
+  const w = Math.floor(window.innerWidth), h = Math.floor(window.innerHeight);
+  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; force = true; }
+  const rw = Math.max(1, Math.floor(w * config.renderScale));
+  const rh = Math.max(1, Math.floor(h * config.renderScale));
+  if (force || rw !== renderW || rh !== renderH) {
+    freeTarget(targetA); freeTarget(targetB);
+    targetA = makeTarget(rw, rh); targetB = makeTarget(rw, rh);
+    renderW = rw; renderH = rh;
+  }
+}
+window.addEventListener('resize', () => resize(false));
+
+// ---- rendering ------------------------------------------------------------
+function drawScene(scene, target, t){
+  const p = programs.get(scene.shader);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, target.fbo);
+  gl.viewport(0, 0, target.w, target.h);
+  gl.useProgram(p.prog);
+  gl.uniform1f(p.u_time, t);
+  gl.uniform2f(p.u_resolution, target.w, target.h);
+  gl.uniform1f(p.u_seed, scene.seed);
+  for (const k in scene.params) {
+    let loc = p.params.get(k);
+    if (loc === undefined) { loc = gl.getUniformLocation(p.prog, k); p.params.set(k, loc); }
+    if (loc === null) continue;
+    const v = scene.params[k];
+    if (typeof v === 'number') gl.uniform1f(loc, v);
+    else if (Array.isArray(v)) {
+      if (v.length === 2) gl.uniform2fv(loc, v);
+      else if (v.length === 3) gl.uniform3fv(loc, v);
+      else if (v.length === 4) gl.uniform4fv(loc, v);
+    }
+  }
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+}
+
+let frames = 0, fpsAccum = 0, lastFpsT = now(), fps = 0, lastLog = now();
+let showStats = false;
+const t0 = now();
+
+function frame(){
+  requestAnimationFrame(frame);
+  if (!scenes.length) return;
+  const t = now();
+  const elapsed = t - sceneStart;
+  const scene = scenes[cur];
+
+  // schedule next scene
+  if (nxt < 0 && scenes.length > 1 && elapsed >= scene.duration) {
+    nxt = (cur + 1) % scenes.length;
+    fadeStart = t;
+  }
+
+  drawScene(scene, targetA, t - t0);
+  let mixAmt = 0;
+  if (nxt >= 0) {
+    drawScene(scenes[nxt], targetB, t - t0);
+    mixAmt = Math.min(1, (t - fadeStart) / config.crossfade);
+    mixAmt = mixAmt * mixAmt * (3 - 2 * mixAmt);
+    if (mixAmt >= 1) { cur = nxt; nxt = -1; sceneStart = t; fadeStart = -1; }
+  }
+
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.useProgram(compositeProg);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, targetA.tex); gl.uniform1i(compU.texA, 0);
+  gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, targetB.tex); gl.uniform1i(compU.texB, 1);
+  gl.uniform1f(compU.mixAmt, mixAmt);
+  gl.uniform2f(compU.res, canvas.width, canvas.height);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+  // stats
+  frames++;
+  if (t - lastFpsT >= 1) {
+    fps = frames / (t - lastFpsT); frames = 0; lastFpsT = t;
+    if (showStats) {
+      const mem = performance.memory ? (performance.memory.usedJSHeapSize / 1048576).toFixed(1) + ' MB heap' : '';
+      statsEl.textContent =
+        `fps ${fps.toFixed(1)}  ${canvas.width}x${canvas.height} -> ${renderW}x${renderH}\n` +
+        `scene ${scene.name} ${elapsed.toFixed(0)}/${scene.duration}s` + (nxt >= 0 ? ` -> ${scenes[nxt].name} ${(mixAmt*100).toFixed(0)}%` : '') + `\n` +
+        `uptime ${((t - t0)/60).toFixed(1)} min  ${mem}`;
+    }
+  }
+  if (t - lastLog >= 60) {
+    lastLog = t;
+    const mem = performance.memory ? (performance.memory.usedJSHeapSize / 1048576).toFixed(1) : '?';
+    console.log(`[stats] uptime=${((t - t0)/60).toFixed(0)}min fps=${fps.toFixed(1)} scene=${scene.name} heapMB=${mem}`);
+  }
+}
+
+// ---- input ----------------------------------------------------------------
+window.addEventListener('keydown', e => {
+  if (e.key === 's') { showStats = !showStats; statsEl.style.display = showStats ? 'block' : 'none'; }
+  if (e.key === 'n' && scenes.length > 1 && nxt < 0) { nxt = (cur + 1) % scenes.length; fadeStart = now(); }
+  if (e.key === 'f') { if (document.fullscreenElement) document.exitFullscreen(); else document.documentElement.requestFullscreen(); }
+});
+
+// ---- boot -----------------------------------------------------------------
+(async () => {
+  try { await loadConfig(); }
+  catch (e) { showErr('config: ' + e.message); }
+  sceneStart = now();
+  requestAnimationFrame(frame);
+  setInterval(async () => {
+    try { await loadConfig(); }
+    catch (e) { showErr('reload: ' + e.message); }   // keep playing old config
+  }, Math.max(1, config.reloadInterval) * 1000);
+})();
+</script>
+</body>
+</html>

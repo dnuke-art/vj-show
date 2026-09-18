@@ -1,0 +1,15 @@
+{
+  "crossfade": 4,
+  "renderScale": 0.5,
+  "reloadInterval": 5,
+  "scenes": [
+    { "name": "warp-slow",   "shader": "scenes/warp.glsl",  "duration": 60,
+      "params": { "speed": 0.08, "warp": 1.4, "hueShift": 0.0 } },
+    { "name": "rings",       "shader": "scenes/rings.glsl", "duration": 45,
+      "params": { "speed": 0.3, "rings": 9.0, "wobble": 0.35 } },
+    { "name": "tunnel",      "shader": "scenes/tunnel.glsl", "duration": 50,
+      "params": { "speed": 0.5, "twist": 0.6, "glow": 1.2 } },
+    { "name": "warp-hot",    "shader": "scenes/warp.glsl",  "duration": 40,
+      "params": { "speed": 0.2, "warp": 2.6, "hueShift": 0.55 } }
+  ]
+}
