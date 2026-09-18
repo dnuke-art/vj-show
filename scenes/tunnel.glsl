@@ -4,7 +4,7 @@ uniform float twist;
 uniform float glow;
 
 void main(){
-  vec2 uv = (gl_FragCoord.xy - 0.5*u_resolution) / u_resolution.y;
+  vec2 uv = vuv();
   float t = u_time*speed + u_seed;
   float r = length(uv) + 1e-4;
   float a = atan(uv.y, uv.x) + twist*sin(t*0.5) / r;

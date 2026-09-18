@@ -19,7 +19,7 @@ float fbm(vec2 p){
 vec3 pal(float t){ return 0.5 + 0.5*cos(6.2831*(t + hueShift + vec3(0.0, 0.33, 0.67))); }
 
 void main(){
-  vec2 uv = (gl_FragCoord.xy - 0.5*u_resolution) / u_resolution.y;
+  vec2 uv = vuv();
   float t = u_time*speed + u_seed;
   vec2 q = vec2(fbm(uv + t*0.3), fbm(uv - t*0.2 + 4.0));
   vec2 r = vec2(fbm(uv + warp*q + vec2(1.7, 9.2) + t*0.15),

@@ -4,7 +4,7 @@ uniform float rings;
 uniform float wobble;
 
 void main(){
-  vec2 uv = (gl_FragCoord.xy - 0.5*u_resolution) / u_resolution.y;
+  vec2 uv = vuv();
   float t = u_time*speed + u_seed;
   vec2 c1 = 0.35*vec2(cos(t*0.7), sin(t*0.9));
   vec2 c2 = 0.35*vec2(cos(t*0.5 + 2.0), sin(t*0.6 + 1.0));
