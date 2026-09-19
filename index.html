@@ -23,8 +23,12 @@
   #panel input[type=range] { width:100%; }
   #panel .val { font-family:monospace; font-size:13px; text-align:right; }
   #panel .bar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin:8px 0 14px; }
-  #panel select, #panel button { font:14px system-ui, sans-serif; padding:6px 10px; background:#222; color:#ddd; border:1px solid #444; border-radius:4px; }
-  #panel button:active { background:#444; }
+  #panel select, #panel button { font:14px system-ui, sans-serif; padding:6px 10px; background:#222; color:#ddd; border:1px solid #444; border-radius:4px;
+                                 transition: background .12s, border-color .12s, transform .06s; }
+  #panel button:hover { background:#2c2c2c; border-color:#666; }
+  #panel button:active, #panel button.flash { background:#3a7bd5; border-color:#5b9cf0; color:#fff; transform:scale(.97); }
+  #panel button.done { background:#2e7d4f; border-color:#3fa76a; color:#fff; }
+  #panel button:disabled { opacity:.4; cursor:default; }
   #panel .status { font-family:monospace; font-size:12px; color:#8c8; white-space:pre-wrap; }
   #panel h3 { margin:14px 0 4px; font-size:13px; color:#999; text-transform:uppercase; letter-spacing:.05em; }
 </style>
@@ -684,6 +688,7 @@ function panelStatus(){
   if (!leaderId) { el.style.color = '#f96'; el.textContent = `NO DISPLAY in room "${room}": sliders only change this preview.\nDisplays must be open on this server in the same room.`; return; }
   el.style.color = '#8c8';
   el.textContent = `room "${room}": leader ${leaderId}, tiles ${tiles.join(', ')}` + note;
+  $('pplay').disabled = !editing || editing === playing;
 }
 function panelSceneName(){
   if ($('plock').checked && panel.scene && scenes.some(s => s.name === panel.scene)) return panel.scene;
@@ -754,11 +759,18 @@ function panelUpdate(){
   }
   panelStatus();
 }
+// press feedback: every panel button flashes on click; `done` shows a short confirmation label
+function flash(btn, doneText){
+  btn.classList.add('flash'); setTimeout(() => btn.classList.remove('flash'), 180);
+  if (doneText) { const t = btn.textContent; btn.textContent = doneText; btn.classList.add('done');
+                  setTimeout(() => { btn.textContent = t; btn.classList.remove('done'); }, 1200); }
+}
 if (isControl) {
+  for (const b of document.querySelectorAll('#panel button')) b.addEventListener('click', () => flash(b));
   $('pscene').addEventListener('change', e => { panel.scene = e.target.value; $('plock').checked = true; panelRebuild(); });
   $('plock').addEventListener('change', () => { if (!$('plock').checked) panelRebuild(); });
   $('pnext').addEventListener('click', requestSkip);
-  $('pplay').addEventListener('click', () => { const n = panelSceneName(); if (n) jumpTo(n); });
+  $('pplay').addEventListener('click', () => { const n = panelSceneName(); if (n) { jumpTo(n); flash($('pplay'), 'fading…'); } });
   $('preset').addEventListener('click', () => {
     const name = panelSceneName(); if (!name) return;
     delete overrides[name];
@@ -775,7 +787,7 @@ if (isControl) {
     try {
       const r = await fetch('scenes', { method:'POST', body: JSON.stringify(cfg, null, 2) });
       if (!r.ok) throw new Error(await r.text());
-      $('pstatus').textContent = 'saved scenes.json';
+      flash($('psave'), 'saved ✓');
     } catch (e) { showErr('save failed: ' + e.message); }
   });
 }
