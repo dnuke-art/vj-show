@@ -35,6 +35,7 @@
   <div class="bar">
     <select id="pscene"></select>
     <label><input type="checkbox" id="plock"> lock scene</label>
+    <button id="pplay">play now</button>
     <button id="pnext">next scene</button>
     <button id="preset">reset overrides</button>
     <button id="psave">save to scenes.json</button>
@@ -351,6 +352,7 @@ function drawScene(scene, target, t){
   }
   gl.bindFramebuffer(gl.FRAMEBUFFER, target.fbo);
   gl.viewport(0, 0, target.w, target.h);
+  gl.bindVertexArray(vao);                 // never assume: a module scene may have unbound it
   gl.useProgram(p.prog);
   gl.uniform1f(p.u_time, t);
   gl.uniform2f(p.u_resolution, target.w, target.h);
@@ -378,26 +380,39 @@ if (showStats) statsEl.style.display = 'block';
 const bootT = now();
 
 function startFade(toIndex){ nxt = toIndex; fadeStart = showNow(); syncBroadcastState(); }
+// Schedule advances on show time from a timer, not from rendered frames, so an occluded or
+// throttled tab still keeps the show (and its followers) moving. Leader only; followers get it over the wire.
+function tick(){
+  if (!scenes.length) return;
+  const t = showNow();
+  if (nxt >= 0 && t - fadeStart >= config.crossfade) {
+    cur = nxt; nxt = -1; sceneStart = fadeStart + config.crossfade; fadeStart = -1;
+    if (isLeader()) syncBroadcastState();
+    panelUpdate();
+  }
+  if (isLeader() && nxt < 0 && scenes.length > 1 && t - sceneStart >= scenes[cur].duration) {
+    startFade((cur + 1) % scenes.length);
+  }
+}
+setInterval(tick, 100);
 
 function frame(){
   requestAnimationFrame(frame);
   if (!scenes.length) return;
   const t = showNow();
   const elapsed = t - sceneStart;
-  const scene = scenes[cur];
-
-  // schedule next scene (leader only; followers get the schedule over the wire)
-  if (isLeader() && nxt < 0 && scenes.length > 1 && elapsed >= scene.duration) {
-    startFade((cur + 1) % scenes.length);
+  let scene = scenes[cur], previewOnly = false;
+  if (isControl) {                                   // preview shows the scene being edited, not the one playing
+    const i = scenes.findIndex(s => s.name === panelSceneName());
+    if (i >= 0 && i !== cur) { scene = scenes[i]; previewOnly = true; }
   }
 
   drawScene(scene, targetA, t - epoch);
   let mixAmt = 0;
-  if (nxt >= 0) {
+  if (nxt >= 0 && !previewOnly) {
     drawScene(scenes[nxt], targetB, t - epoch);
     mixAmt = Math.min(1, Math.max(0, (t - fadeStart) / config.crossfade));
     mixAmt = mixAmt * mixAmt * (3 - 2 * mixAmt);
-    if (mixAmt >= 1) { cur = nxt; nxt = -1; sceneStart = fadeStart + config.crossfade; fadeStart = -1; if (isLeader()) syncBroadcastState(); }
   }
 
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -405,6 +420,7 @@ function frame(){
     gl.viewport(0, 0, canvas.width, canvas.height); gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT);
   }
   gl.viewport(view.x, view.y, view.w, view.h);
+  gl.bindVertexArray(vao);
   gl.useProgram(compositeProg);
   gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, targetA.tex); gl.uniform1i(compU.texA, 0);
   gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, targetB.tex); gl.uniform1i(compU.texB, 1);
@@ -439,6 +455,12 @@ window.addEventListener('keydown', e => {
   if (e.key === 'n') requestSkip();
   if (e.key === 'f') { if (document.fullscreenElement) document.exitFullscreen(); else document.documentElement.requestFullscreen(); }
 });
+function jumpTo(name){
+  const i = scenes.findIndex(s => s.name === name);
+  if (i < 0 || i === cur || nxt >= 0) return;
+  if (isLeader()) startFade(i);
+  else if (leaderId) syncSend(leaderId, { type:'jump', scene: name });
+}
 function requestSkip(){
   if (scenes.length < 2 || nxt >= 0) return;
   if (isLeader()) startFade((cur + 1) % scenes.length);
@@ -585,6 +607,8 @@ function handleData(from, m){
     if (isLeader()) applyOverride(m.scene, m.key, m.value, true);
   } else if (m.type === 'resetScene') {
     if (isLeader()) { delete overrides[m.scene]; syncBroadcastState(); }
+  } else if (m.type === 'jump') {
+    if (isLeader()) jumpTo(m.scene);
   }
 }
 
@@ -635,7 +659,7 @@ function panelStatus(){
   const el = $('pstatus');
   const tiles = connectedIds().filter(id => peerRoles.get(id) !== 'control');
   const editing = panelSceneName(), playing = cur >= 0 && scenes[cur] ? scenes[cur].name : null;
-  const note = editing && editing !== playing ? `\nediting "${editing}" while "${playing}" is playing: changes show when it comes up` : '';
+  const note = editing && editing !== playing ? `\npreviewing "${editing}"; displays are playing "${playing}" (press play now to switch)` : '';
   if (!room) { el.style.color = '#f96'; el.textContent = 'NO ROOM: sliders only change this preview.\nAdd ?sync=<room> to this URL, or "sync": {"room": "show"} to scenes.json.'; return; }
   if (!leaderId) { el.style.color = '#f96'; el.textContent = `NO DISPLAY in room "${room}": sliders only change this preview.\nDisplays must be open on this server in the same room.`; return; }
   el.style.color = '#8c8';
@@ -714,6 +738,7 @@ if (isControl) {
   $('pscene').addEventListener('change', e => { panel.scene = e.target.value; $('plock').checked = true; panelRebuild(); });
   $('plock').addEventListener('change', () => { if (!$('plock').checked) panelRebuild(); });
   $('pnext').addEventListener('click', requestSkip);
+  $('pplay').addEventListener('click', () => { const n = panelSceneName(); if (n) jumpTo(n); });
   $('preset').addEventListener('click', () => {
     const name = panelSceneName(); if (!name) return;
     delete overrides[name];

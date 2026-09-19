@@ -47,7 +47,9 @@ over a twelve-hour run.
 ### The player (`index.html`)
 
 - Loads `scenes.json`, compiles each scene, and autopilots through the list. Each scene
-  plays for its `duration`, then crossfades to the next over `crossfade` seconds.
+  plays for its `duration`, then crossfades to the next over `crossfade` seconds. The
+  schedule advances on show time from a timer, not from rendered frames, so an occluded
+  or throttled window still keeps the show moving.
 - Renders the current scene and, during a fade, the next one into two offscreen targets
   at `renderScale` × display resolution, then composites with a smoothstep mix and
   upscales. Half resolution is the baseline for old GPUs.
@@ -147,9 +149,11 @@ value to the leader, which folds it into the state it already broadcasts, so eve
 and any late joiner converges on the same value within a frame or two.
 
 - A control peer never becomes leader and never counts as a tile, whatever its id.
-- The panel follows whichever scene is playing unless you tick *lock scene* or pick one
-  from the dropdown. *next scene* skips. *reset overrides* drops the live tweaks for that
-  scene and goes back to what `scenes.json` says.
+- The panel and its preview follow whichever scene is playing unless you tick *lock
+  scene* or pick one from the dropdown. Picking a scene previews it locally while the
+  displays keep playing the show; *play now* fades the show to it. *next scene* skips.
+  *reset overrides* drops the live tweaks for that scene and goes back to what
+  `scenes.json` says.
 - Tweaks live in the leader's memory until you press *save to scenes.json*, which merges
   them into the file through the server. Displays hot-reload it, so the tweak is now part
   of the show and survives restarts. That is the accretion loop: tweak, watch, save.
