@@ -1,4 +1,6 @@
 {
+  "canvas": "16:9",
+  "fit": "contain",
   "crossfade": 4,
   "renderScale": 0.5,
   "reloadInterval": 5,

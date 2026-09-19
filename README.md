@@ -94,6 +94,25 @@ point light, fog and glow follow the graph's values, every one overridable in `p
 approximated. `heart-scatter` uses the graph's own top-down camera; `heart-front` is the
 same scene from the front.
 
+### Canvas, tiles and fit
+
+Nothing in the show is specified in pixels. `scenes.json` declares the shape the work is
+composed for, `"canvas": "16:9"`, and every window shows some rectangle of that canvas.
+
+- A tile is a normalized rectangle of the canvas: `?grid=cols,rows&tile=col,row` (row 0
+  at the top), or `?tile=x,y,w,h` in 0..1 units for unequal tiles. A window with no tile
+  shows the whole canvas. The control preview always shows the whole canvas.
+- `fit` says how a window's pixels map onto its tile, like CSS `object-fit`:
+  `contain` letterboxes (default), `cover` zooms and trims, `fill` stretches. Set it
+  show-wide in `scenes.json` or per window with `?fit=cover`, since it depends on the
+  hardware, not the work.
+- Two 16:9 displays side by side are a `"canvas": "32:9"` with `grid=2,1`, and each
+  tile is exactly 16:9, so no bars. The TiXL heart wall, four portrait 1080×1920 tiles,
+  is `"canvas": "36:16"` with `grid=4,1`, and nothing ever mentions 1080.
+- Shader scenes see the canvas through `vuv()` and module scenes through
+  `tileProjection`. Both take the canvas-unit rectangle this window is showing, so a 4K
+  projector and a phone preview compute identical coordinates for the same point.
+
 ### Multi-display sync
 
     http://server:8000/?sync=show&id=left&grid=2,1&tile=0,0
@@ -107,9 +126,8 @@ same scene from the front.
 - Followers ping the leader NTP-style, keep the lowest-RTT sample of the last sixteen,
   and slew their clock onto it (about 30 ms/s, with a hard jump for errors over 250 ms).
   If the leader disappears the survivors re-elect.
-- `grid` is columns,rows and `tile` is this instance's column,row (row 0 at the top).
-  Tiles are assumed equal size. Sync is bounded by each display's own vsync phase, so
-  expect tiles within one frame of each other, not genlocked.
+- Sync is bounded by each display's own vsync phase, so expect tiles within one frame
+  of each other, not genlocked.
 - No STUN is needed on a LAN. If peers never connect, add
   `"sync": {"stun": ["stun:stun.l.google.com:19302"]}` to `scenes.json`.
 

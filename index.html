@@ -12,7 +12,7 @@
          background:rgba(0,0,0,.7); padding:6px 8px; white-space:pre-wrap; max-width:90vw; display:none; }
   /* control mode: preview strip on top, sliders below */
   body.control { cursor:auto; overflow:auto; background:#111; color:#ddd; font:14px/1.4 system-ui, sans-serif; }
-  body.control canvas { height:28vh; }
+  body.control canvas { display:block; margin:0 auto; }
   #panel { display:none; padding:12px 16px 40px; max-width:720px; margin:0 auto; }
   body.control #panel { display:block; }
   #panel .row { display:grid; grid-template-columns: 9em 1fr 5em; gap:10px; align-items:center; margin:6px 0; }
@@ -77,10 +77,10 @@ precision highp float;
 uniform sampler2D texA;
 uniform sampler2D texB;
 uniform float mixAmt;
-uniform vec2 u_resolution;
+uniform vec2 u_resolution, u_offset;
 out vec4 fragColor;
 void main(){
-  vec2 uv = gl_FragCoord.xy / u_resolution;
+  vec2 uv = (gl_FragCoord.xy - u_offset) / u_resolution;
   fragColor = mix(texture(texA, uv), texture(texB, uv), mixAmt);
 }`;
 
@@ -162,6 +162,7 @@ const compU = {
   texB: gl.getUniformLocation(compositeProg, 'texB'),
   mixAmt: gl.getUniformLocation(compositeProg, 'mixAmt'),
   res: gl.getUniformLocation(compositeProg, 'u_resolution'),
+  off: gl.getUniformLocation(compositeProg, 'u_offset'),
 };
 
 // ---- clock ----------------------------------------------------------------
@@ -172,11 +173,34 @@ let clockOffset = 0;
 function showNow(){ return now() + clockOffset; }
 let epoch = showNow();           // u_time = showNow() - epoch
 
-// ---- tiling ---------------------------------------------------------------
+// ---- canvas, tile, fit ----------------------------------------------------
+// The show has a resolution-free canvas aspect (scenes.json "canvas": "16:9"). Each window
+// shows one tile of it: ?grid=cols,rows&tile=col,row, or ?tile=x,y,w,h in 0..1 canvas
+// units (y down, row 0 at the top). The window's pixels map onto its tile according to
+// "fit" (scenes.json, or ?fit= per window): contain = letterbox, cover = zoom and trim,
+// fill = stretch. No pixel sizes anywhere: canvas units are x in [0, A], y in [0, 1].
 const grid = (qs.get('grid') || '1,1').split(',').map(Number);
-const tile = (qs.get('tile') || '0,0').split(',').map(Number);
+const tileQ = (qs.get('tile') || '0,0').split(',').map(Number);
 const COLS = Math.max(1, grid[0] | 0), ROWS = Math.max(1, grid[1] | 0);
-const COL = Math.min(COLS - 1, tile[0] | 0), ROW = Math.min(ROWS - 1, tile[1] | 0);   // row 0 = top
+let TILE;
+if (tileQ.length === 4) TILE = { x: tileQ[0], y: tileQ[1], w: tileQ[2], h: tileQ[3] };
+else { const c = Math.min(COLS - 1, tileQ[0] | 0), r = Math.min(ROWS - 1, tileQ[1] | 0);
+       TILE = { x: c / COLS, y: r / ROWS, w: 1 / COLS, h: 1 / ROWS }; }
+if (isControl) TILE = { x: 0, y: 0, w: 1, h: 1 };                     // the preview shows the whole canvas
+const FIT_Q = qs.get('fit');
+function canvasAspect(){
+  const c = String(config.canvas || '16:9'), m = c.split(/[:x\/]/).map(Number);
+  return m.length >= 2 && m[1] ? m[0] / m[1] : (+c || 16 / 9);
+}
+function fitMode(){ const f = FIT_Q || config.fit || 'contain'; return ['contain', 'cover', 'fill'].includes(f) ? f : 'contain'; }
+let view = { x: 0, y: 0, w: 1, h: 1 };       // window-pixel rect that shows the tile
+let region = { X: 0, Y: 0, W: 1, H: 1 };     // canvas-unit rect shown inside `view`
+// Uniform values for a render target of this window: virtual canvas size in target pixels
+// and where this window's region sits in it. Identical results at any resolution.
+function tileUniforms(target){
+  const Fx = target.w / region.W, Fy = target.h / region.H;
+  return { fullW: canvasAspect() * Fx, fullH: Fy, tileX: region.X * Fx, tileY: (1 - region.Y - region.H) * Fy };
+}
 
 // ---- state ----------------------------------------------------------------
 let config = { crossfade: 3, renderScale: 1, reloadInterval: 5, scenes: [] };
@@ -263,7 +287,8 @@ async function loadConfig(){
   const nextName = nxt >= 0 && scenes[nxt] ? scenes[nxt].name : null;
   configText = text;
   config = { crossfade: +cfg.crossfade || 3, renderScale: +cfg.renderScale || 1,
-             reloadInterval: +cfg.reloadInterval || 5, scenes: cfg.scenes, sync: cfg.sync || {} };
+             reloadInterval: +cfg.reloadInterval || 5, scenes: cfg.scenes, sync: cfg.sync || {},
+             canvas: cfg.canvas || '16:9', fit: cfg.fit };
   scenes = list;
   if (!scenes.length) throw new Error('scenes.json has no scenes');
   const keep = prevName !== null ? scenes.findIndex(s => s.name === prevName) : -1;
@@ -282,10 +307,29 @@ function hashStr(s){ let h = 2166136261; for (const c of s) { h ^= c.charCodeAt(
 
 // ---- sizing ---------------------------------------------------------------
 function resize(force){
-  const w = Math.floor(window.innerWidth), h = Math.floor(window.innerHeight);
+  const A = canvasAspect(), fit = fitMode();
+  let w = Math.floor(window.innerWidth), h = Math.floor(window.innerHeight);
+  if (isControl) {                                     // preview: as wide as fits, at the show's aspect, ≤ 30% of height
+    w = Math.floor(Math.min(window.innerWidth, window.innerHeight * 0.3 * A)); h = Math.max(1, Math.floor(w / A));
+    canvas.style.width = w + 'px'; canvas.style.height = h + 'px';
+  }
   if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; force = true; }
-  const rw = Math.max(1, Math.floor(w * config.renderScale));
-  const rh = Math.max(1, Math.floor(h * config.renderScale));
+  // tile in canvas units, then fit the window to it
+  const X = TILE.x * A, W = TILE.w * A, Y = TILE.y, H = TILE.h;
+  const At = W / H, Aw = w / h;
+  let vx = 0, vy = 0, vw = w, vh = h, RX = X, RY = Y, RW = W, RH = H;
+  if (fit === 'contain') {
+    if (Aw > At) { vw = Math.max(1, Math.round(h * At)); vx = (w - vw) >> 1; }
+    else         { vh = Math.max(1, Math.round(w / At)); vy = (h - vh) >> 1; }
+  } else if (fit === 'cover') {
+    if (Aw > At) { RH = W / Aw; RY = Y + (H - RH) / 2; }
+    else         { RW = H * Aw; RX = X + (W - RW) / 2; }
+  }                                                    // fill: whole window ← whole tile, stretched
+  const viewChanged = vx !== view.x || vy !== view.y || vw !== view.w || vh !== view.h;
+  view = { x: vx, y: vy, w: vw, h: vh }; region = { X: RX, Y: RY, W: RW, H: RH };
+  const rw = Math.max(1, Math.floor(vw * config.renderScale));
+  const rh = Math.max(1, Math.floor(vh * config.renderScale));
+  force = force || viewChanged;
   if (force || rw !== renderW || rh !== renderH) {
     freeTarget(targetA); freeTarget(targetB);
     targetA = makeTarget(rw, rh); targetB = makeTarget(rw, rh);
@@ -298,10 +342,9 @@ window.addEventListener('resize', () => resize(false));
 function drawScene(scene, target, t){
   const p = programs.get(scene.shader);
   const params = effParams(scene);
+  const tu = tileUniforms(target);
   if (p.kind === 'module') {
-    p.inst.draw({ target, time: t, params, seed: scene.seed,
-                  fullW: target.w * COLS, fullH: target.h * ROWS,
-                  tileX: COL * target.w, tileY: (ROWS - 1 - ROW) * target.h });
+    p.inst.draw({ target, time: t, params, seed: scene.seed, ...tu });
     gl.disable(gl.DEPTH_TEST); gl.disable(gl.CULL_FACE); gl.disable(gl.BLEND);
     gl.bindVertexArray(vao);
     return;
@@ -311,8 +354,8 @@ function drawScene(scene, target, t){
   gl.useProgram(p.prog);
   gl.uniform1f(p.u_time, t);
   gl.uniform2f(p.u_resolution, target.w, target.h);
-  gl.uniform2f(p.u_fullResolution, target.w * COLS, target.h * ROWS);
-  gl.uniform2f(p.u_tileOrigin, COL * target.w, (ROWS - 1 - ROW) * target.h);  // GL y is up
+  gl.uniform2f(p.u_fullResolution, tu.fullW, tu.fullH);
+  gl.uniform2f(p.u_tileOrigin, tu.tileX, tu.tileY);
   gl.uniform1f(p.u_seed, scene.seed);
   for (const k in params) {
     let loc = p.params.get(k);
@@ -358,12 +401,16 @@ function frame(){
   }
 
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-  gl.viewport(0, 0, canvas.width, canvas.height);
+  if (view.w !== canvas.width || view.h !== canvas.height) {          // letterbox bars
+    gl.viewport(0, 0, canvas.width, canvas.height); gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT);
+  }
+  gl.viewport(view.x, view.y, view.w, view.h);
   gl.useProgram(compositeProg);
   gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, targetA.tex); gl.uniform1i(compU.texA, 0);
   gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, targetB.tex); gl.uniform1i(compU.texB, 1);
   gl.uniform1f(compU.mixAmt, mixAmt);
-  gl.uniform2f(compU.res, canvas.width, canvas.height);
+  gl.uniform2f(compU.res, view.w, view.h);
+  gl.uniform2f(compU.off, view.x, view.y);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
 
   // stats
@@ -374,7 +421,7 @@ function frame(){
     if (showStats) {
       const mem = performance.memory ? (performance.memory.usedJSHeapSize / 1048576).toFixed(1) + ' MB heap' : '';
       statsEl.textContent =
-        `fps ${fps.toFixed(1)}  ${canvas.width}x${canvas.height} -> ${renderW}x${renderH}  tile ${COL},${ROW} of ${COLS}x${ROWS}\n` +
+        `fps ${fps.toFixed(1)}  ${canvas.width}x${canvas.height} -> ${renderW}x${renderH}  canvas ${config.canvas} ${fitMode()}  tile ${[TILE.x, TILE.y, TILE.w, TILE.h].map(v => +v.toFixed(3)).join(',')}\n` +
         `scene ${scene.name} ${elapsed.toFixed(0)}/${scene.duration}s` + (nxt >= 0 ? ` -> ${scenes[nxt].name} ${(mixAmt*100).toFixed(0)}%` : '') + `\n` +
         `uptime ${((ln - bootT)/60).toFixed(1)} min  ${mem}\n` + syncStatsLine();
     }
@@ -567,7 +614,7 @@ function syncSlewClock(){
 async function syncStart(){
   if (!room) return;
   if (!window.RTCPeerConnection) { showErr('WebRTC not available; running unsynced'); return; }
-  console.log('[sync] room', room, 'id', myId, 'tile', COL, ROW, 'of', COLS, ROWS);
+  console.log('[sync] room', room, 'id', myId, 'tile', TILE);
   await sigPoll();                    // learn current seq so we skip stale messages
   await sigPost({ type:'hello' });
   setInterval(sigPoll, 500);
