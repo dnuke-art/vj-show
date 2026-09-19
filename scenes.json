@@ -1,6 +1,9 @@
 {
   "canvas": "16:9",
   "fit": "contain",
+  "sync": {
+    "room": "show"
+  },
   "crossfade": 4,
   "renderScale": 0.5,
   "reloadInterval": 5,

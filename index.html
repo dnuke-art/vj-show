@@ -448,7 +448,7 @@ function requestSkip(){
 // ===========================================================================
 // sync: WebRTC data channels, HTTP-polled signaling, leader-owned schedule
 // ===========================================================================
-const room = qs.get('sync');
+let room = qs.get('sync');          // or scenes.json sync.room, resolved in syncStart()
 const myId = qs.get('id') || Math.random().toString(36).slice(2, 8);
 const peers = new Map();       // id -> { pc, dc, open }
 const peerRoles = new Map();   // id -> 'display' | 'control'  (control peers never lead, never count as tiles)
@@ -612,7 +612,8 @@ function syncSlewClock(){
 }
 
 async function syncStart(){
-  if (!room) return;
+  if (!room && config.sync && config.sync.room) room = String(config.sync.room);
+  if (!room) { panelStatus(); return; }
   if (!window.RTCPeerConnection) { showErr('WebRTC not available; running unsynced'); return; }
   console.log('[sync] room', room, 'id', myId, 'tile', TILE);
   await sigPoll();                    // learn current seq so we skip stale messages
@@ -631,9 +632,14 @@ const panel = { scene: null, building: false };
 const $ = id => document.getElementById(id);
 function panelStatus(){
   if (!isControl) return;
-  $('pstatus').textContent = !room ? 'add ?sync=<room> to the URL to control displays'
-    : !leaderId ? `room "${room}": waiting for a display…`
-    : `room "${room}": leader ${leaderId}, tiles ${connectedIds().filter(id => peerRoles.get(id) !== 'control').join(', ')}`;
+  const el = $('pstatus');
+  const tiles = connectedIds().filter(id => peerRoles.get(id) !== 'control');
+  const editing = panelSceneName(), playing = cur >= 0 && scenes[cur] ? scenes[cur].name : null;
+  const note = editing && editing !== playing ? `\nediting "${editing}" while "${playing}" is playing: changes show when it comes up` : '';
+  if (!room) { el.style.color = '#f96'; el.textContent = 'NO ROOM: sliders only change this preview.\nAdd ?sync=<room> to this URL, or "sync": {"room": "show"} to scenes.json.'; return; }
+  if (!leaderId) { el.style.color = '#f96'; el.textContent = `NO DISPLAY in room "${room}": sliders only change this preview.\nDisplays must be open on this server in the same room.`; return; }
+  el.style.color = '#8c8';
+  el.textContent = `room "${room}": leader ${leaderId}, tiles ${tiles.join(', ')}` + note;
 }
 function panelSceneName(){
   if ($('plock').checked && panel.scene && scenes.some(s => s.name === panel.scene)) return panel.scene;
@@ -677,7 +683,7 @@ function panelRebuild(){
       input.dataset.key = key; input.dataset.comp = i;
       const out = document.createElement('span'); out.className = 'val'; out.textContent = fmt(val);
       input.addEventListener('input', () => {
-        const n = +input.value; out.textContent = fmt(n);
+        const n = +input.value; out.textContent = fmt(n); input.dataset.touched = performance.now();
         const curVal = effParams(scene)[key];
         const next = Array.isArray(curVal) ? curVal.map((c, j) => (j === i ? n : c)) : n;
         setParam(scene.name, key, next);
@@ -697,7 +703,7 @@ function panelUpdate(){
   if (!scene) return;
   const params = effParams(scene);
   for (const input of $('psliders').querySelectorAll('input[type=range]')) {
-    if (input === document.activeElement) continue;
+    if (input === document.activeElement || performance.now() - (+input.dataset.touched || 0) < 400) continue;
     const v = params[input.dataset.key]; if (v === undefined) continue;
     const n = Array.isArray(v) ? v[+input.dataset.comp] : v;
     if (+input.value !== n) { input.value = n; input.nextElementSibling.textContent = fmt(n); }

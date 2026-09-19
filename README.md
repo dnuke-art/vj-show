@@ -115,10 +115,11 @@ composed for, `"canvas": "16:9"`, and every window shows some rectangle of that 
 
 ### Multi-display sync
 
-    http://server:8000/?sync=show&id=left&grid=2,1&tile=0,0
-    http://server:8000/?sync=show&id=right&grid=2,1&tile=1,0
+    http://server:8000/?id=left&grid=2,1&tile=0,0
+    http://server:8000/?id=right&grid=2,1&tile=1,0
 
-- Instances in the same `sync` room find each other through the server's signaling
+- The room is `"sync": {"room": "show"}` in `scenes.json`, or `?sync=<room>` per
+  window. Instances in the same room find each other through the server's signaling
   mailbox (`serve.py`, polled every 500 ms) and open a WebRTC data channel. Once the
   channel is up the server is no longer needed.
 - The lowest `id` is leader. It owns the schedule (which scene, when the fade started)
@@ -133,7 +134,12 @@ composed for, `"canvas": "16:9"`, and every window shows some rectangle of that 
 
 ### Control mode
 
-    http://server:8000/?sync=show&id=phone&mode=control
+    http://server:8000/?mode=control
+
+The room comes from `scenes.json` (`"sync": {"room": "show"}`), so a controller and the
+kiosk displays on the same server find each other with no other URL params. `?sync=`
+still overrides it per window. The panel's status line turns orange when no display is
+listening in the room, because then the sliders only move the preview.
 
 Open that on a phone or laptop in the same room and you get a slider for every numeric
 param of the scene that is playing, plus a small live preview. Moving a slider sends the
