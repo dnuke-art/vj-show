@@ -498,7 +498,7 @@ let room = qs.get('sync');          // or scenes.json sync.room, resolved in syn
 const myId = qs.get('id') || Math.random().toString(36).slice(2, 8);
 const peers = new Map();       // id -> { pc, dc, open }
 const peerRoles = new Map();   // id -> 'display' | 'control'  (control peers never lead, never count as tiles)
-let leaderId = isControl ? null : myId;
+let leaderId = myId;           // a controller leads itself until a display shows up, so PGM works standalone
 let sigSince = 0;
 let pingSamples = [];          // { rtt, offset } to leader, newest last
 let targetOffset = null;
@@ -511,7 +511,7 @@ function electLeader(){
   if (!isControl) ids.push(myId);
   ids.sort();
   const was = leaderId;
-  leaderId = ids.length ? ids[0] : null;
+  leaderId = ids.length ? ids[0] : (isControl ? myId : null);
   if (leaderId !== was) {
     console.log('[sync] leader is', leaderId, isLeader() ? '(me)' : '');
     pingSamples = []; targetOffset = null;
@@ -684,8 +684,8 @@ function panelStatus(){
   const tiles = connectedIds().filter(id => peerRoles.get(id) !== 'control');
   const editing = panelSceneName(), playing = cur >= 0 && scenes[cur] ? scenes[cur].name : null;
   const note = editing && editing !== playing ? `\npreviewing "${editing}"; displays are playing "${playing}" (press play now to switch)` : '';
-  if (!room) { el.style.color = '#f96'; el.textContent = 'NO ROOM: sliders only change this preview.\nAdd ?sync=<room> to this URL, or "sync": {"room": "show"} to scenes.json.'; return; }
-  if (!leaderId) { el.style.color = '#f96'; el.textContent = `NO DISPLAY in room "${room}": sliders only change this preview.\nDisplays must be open on this server in the same room.`; return; }
+  if (!room) { el.style.color = '#f96'; el.textContent = 'NO ROOM: running standalone, nothing else is controlled.\nAdd ?sync=<room> to this URL, or "sync": {"room": "show"} to scenes.json.' + note; $('pplay').disabled = !editing || editing === playing; return; }
+  if (isLeader()) { el.style.color = '#f96'; el.textContent = `NO DISPLAY in room "${room}": running standalone, nothing else is controlled.\nDisplays must be open on this server in the same room (a display opened from an old server never joins: reload it).` + note; $('pplay').disabled = !editing || editing === playing; return; }
   el.style.color = '#8c8';
   el.textContent = `room "${room}": leader ${leaderId}, tiles ${tiles.join(', ')}` + note;
   $('pplay').disabled = !editing || editing === playing;
