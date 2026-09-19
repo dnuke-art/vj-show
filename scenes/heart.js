@@ -371,9 +371,13 @@ const dot = (a, b) => a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
 const norm = a => { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0]/l, a[1]/l, a[2]/l]; };
 
 // LoadObj(scale) → TransformMesh(translate) → SplitMeshVertices(ShadeFlat): 15 floats per vertex
+let MESH_CENTER = [0, 0, 0];   // bounding-box centre after scale + translate; the default orbit target
 function buildMesh(){
   const { v, vn, faces } = parseObj(OBJ);
   const pos = v.map(p => [p[0]*SCALE, p[1]*SCALE + TRANSLATE_Y, p[2]*SCALE]);
+  const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+  for (const p of pos) for (let k = 0; k < 3; k++) { lo[k] = Math.min(lo[k], p[k]); hi[k] = Math.max(hi[k], p[k]); }
+  MESH_CENTER = [0, 1, 2].map(k => (lo[k] + hi[k]) / 2);
   const out = [];
   for (const f of faces) {
     const p = f.map(([vi]) => pos[vi]);
@@ -450,8 +454,10 @@ export default function create(gl, api){
     const ot = t * P('oscSpeed', 1.0), amp = P('oscAmplitude', 1.0);
     const center = [Math.sin(ot + 1.570789) * amp, Math.sin(ot) * amp, 0];
 
-    // OrbitCamera: eye = Ry(yaw) · Rx(-orbitAngle) · (0,0,dist) + target, slow spin, slight roll wobble
-    const tgt = P('target', [-0.59, -0.724, 0]);
+    // OrbitCamera: eye = Ry(yaw) · Rx(-orbitAngle) · (0,0,dist) + target, slow spin, slight roll wobble.
+    // The graph's own target (-0.59, -0.724, 0) was tuned for the old v3 mesh and sits off to one
+    // side of this one, so the heart swung around it; default to the mesh centre instead.
+    const tgt = P('target', MESH_CENTER);
     const dist = P('distance', 2.5), pitch = -P('orbitAngle', 110) * DEG;
     const yaw = (P('spinRate', 0.05) * t * 360 + P('spinOffset', 0)) * DEG;
     let e = [0, -dist * Math.sin(pitch), dist * Math.cos(pitch)];

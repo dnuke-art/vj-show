@@ -29,11 +29,6 @@
         "orbitAngle": 25,
         "spinRate": 0.03,
         "distance": 3.2,
-        "target": [
-          0,
-          -0.31,
-          0
-        ],
         "amount": 0.5,
         "shrink": 2.27,
         "glowIntensity": 0.36
