@@ -392,6 +392,10 @@ function tick(){
   }
   if (isLeader() && nxt < 0 && scenes.length > 1 && t - sceneStart >= scenes[cur].duration) {
     startFade((cur + 1) % scenes.length);
+    // anchor to the ideal boundary so timer latency doesn't slip the timetable; after a long
+    // stall (a frozen leader) start from now rather than firing a burst of catch-up fades
+    const ideal = sceneStart + scenes[cur].duration;
+    if (t - ideal < config.crossfade) fadeStart = ideal;
   }
 }
 setInterval(tick, 100);
