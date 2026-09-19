@@ -10,12 +10,37 @@
            background:rgba(0,0,0,.6); padding:6px 8px; white-space:pre; display:none; }
   #err { position:fixed; bottom:8px; left:8px; color:#f66; font:12px monospace;
          background:rgba(0,0,0,.7); padding:6px 8px; white-space:pre-wrap; max-width:90vw; display:none; }
+  /* control mode: preview strip on top, sliders below */
+  body.control { cursor:auto; overflow:auto; background:#111; color:#ddd; font:14px/1.4 system-ui, sans-serif; }
+  body.control canvas { height:28vh; }
+  #panel { display:none; padding:12px 16px 40px; max-width:720px; margin:0 auto; }
+  body.control #panel { display:block; }
+  #panel .row { display:grid; grid-template-columns: 9em 1fr 5em; gap:10px; align-items:center; margin:6px 0; }
+  #panel .row label { font-family:monospace; font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #panel input[type=range] { width:100%; }
+  #panel .val { font-family:monospace; font-size:13px; text-align:right; }
+  #panel .bar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin:8px 0 14px; }
+  #panel select, #panel button { font:14px system-ui, sans-serif; padding:6px 10px; background:#222; color:#ddd; border:1px solid #444; border-radius:4px; }
+  #panel button:active { background:#444; }
+  #panel .status { font-family:monospace; font-size:12px; color:#8c8; white-space:pre-wrap; }
+  #panel h3 { margin:14px 0 4px; font-size:13px; color:#999; text-transform:uppercase; letter-spacing:.05em; }
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
 <div id="stats"></div>
 <div id="err"></div>
+<div id="panel">
+  <div class="status" id="pstatus">connecting…</div>
+  <div class="bar">
+    <select id="pscene"></select>
+    <label><input type="checkbox" id="plock"> lock scene</label>
+    <button id="pnext">next scene</button>
+    <button id="preset">reset overrides</button>
+    <button id="psave">save to scenes.json</button>
+  </div>
+  <div id="psliders"></div>
+</div>
 <script>
 'use strict';
 // ---------------------------------------------------------------------------
@@ -60,6 +85,9 @@ void main(){
 }`;
 
 const qs = new URLSearchParams(location.search);
+const MODE = qs.get('mode') === 'control' ? 'control' : 'display';
+const isControl = MODE === 'control';
+if (isControl) document.body.classList.add('control');
 const canvas = document.getElementById('c');
 const statsEl = document.getElementById('stats');
 const errEl = document.getElementById('err');
@@ -155,6 +183,8 @@ let config = { crossfade: 3, renderScale: 1, reloadInterval: 5, scenes: [] };
 let configText = '';
 const programs = new Map();   // shaderPath -> { src, prog, uniform locations }
 let scenes = [];              // resolved: { name, shader, duration, params, seed }
+let overrides = {};           // sceneName -> { param: value }, live tweaks layered over scenes.json
+function effParams(scene){ const o = overrides[scene.name]; return o ? Object.assign({}, scene.params, o) : scene.params; }
 let cur = -1, nxt = -1;
 let sceneStart = 0, fadeStart = -1;   // in show-clock seconds
 let targetA = null, targetB = null;
@@ -244,6 +274,7 @@ async function loadConfig(){
   resize(true);
   clearErr();
   console.log('[config] loaded', scenes.length, 'scenes, renderScale', config.renderScale);
+  panelRebuild();
   return true;
 }
 
@@ -266,8 +297,9 @@ window.addEventListener('resize', () => resize(false));
 // ---- rendering ------------------------------------------------------------
 function drawScene(scene, target, t){
   const p = programs.get(scene.shader);
+  const params = effParams(scene);
   if (p.kind === 'module') {
-    p.inst.draw({ target, time: t, params: scene.params, seed: scene.seed,
+    p.inst.draw({ target, time: t, params, seed: scene.seed,
                   fullW: target.w * COLS, fullH: target.h * ROWS,
                   tileX: COL * target.w, tileY: (ROWS - 1 - ROW) * target.h });
     gl.disable(gl.DEPTH_TEST); gl.disable(gl.CULL_FACE); gl.disable(gl.BLEND);
@@ -282,11 +314,11 @@ function drawScene(scene, target, t){
   gl.uniform2f(p.u_fullResolution, target.w * COLS, target.h * ROWS);
   gl.uniform2f(p.u_tileOrigin, COL * target.w, (ROWS - 1 - ROW) * target.h);  // GL y is up
   gl.uniform1f(p.u_seed, scene.seed);
-  for (const k in scene.params) {
+  for (const k in params) {
     let loc = p.params.get(k);
     if (loc === undefined) { loc = gl.getUniformLocation(p.prog, k); p.params.set(k, loc); }
     if (loc === null) continue;
-    const v = scene.params[k];
+    const v = params[k];
     if (typeof v === 'number') gl.uniform1f(loc, v);
     else if (Array.isArray(v)) {
       if (v.length === 2) gl.uniform2fv(loc, v);
@@ -306,7 +338,6 @@ function startFade(toIndex){ nxt = toIndex; fadeStart = showNow(); syncBroadcast
 
 function frame(){
   requestAnimationFrame(frame);
-  syncSlewClock();
   if (!scenes.length) return;
   const t = showNow();
   const elapsed = t - sceneStart;
@@ -364,7 +395,7 @@ window.addEventListener('keydown', e => {
 function requestSkip(){
   if (scenes.length < 2 || nxt >= 0) return;
   if (isLeader()) startFade((cur + 1) % scenes.length);
-  else syncSend(leaderId, { type:'skip' });
+  else if (leaderId) syncSend(leaderId, { type:'skip' });
 }
 
 // ===========================================================================
@@ -373,7 +404,8 @@ function requestSkip(){
 const room = qs.get('sync');
 const myId = qs.get('id') || Math.random().toString(36).slice(2, 8);
 const peers = new Map();       // id -> { pc, dc, open }
-let leaderId = myId;
+const peerRoles = new Map();   // id -> 'display' | 'control'  (control peers never lead, never count as tiles)
+let leaderId = isControl ? null : myId;
 let sigSince = 0;
 let pingSamples = [];          // { rtt, offset } to leader, newest last
 let targetOffset = null;
@@ -382,23 +414,26 @@ let syncRtt = 0;
 function isLeader(){ return leaderId === myId; }
 function connectedIds(){ return [...peers].filter(([, p]) => p.open).map(([id]) => id); }
 function electLeader(){
-  const ids = [myId, ...connectedIds()].sort();
+  const ids = connectedIds().filter(id => peerRoles.get(id) !== 'control');
+  if (!isControl) ids.push(myId);
+  ids.sort();
   const was = leaderId;
-  leaderId = ids[0];
+  leaderId = ids.length ? ids[0] : null;
   if (leaderId !== was) {
     console.log('[sync] leader is', leaderId, isLeader() ? '(me)' : '');
     pingSamples = []; targetOffset = null;
     if (isLeader()) syncBroadcastState();
+    panelStatus();
   }
 }
 function syncStatsLine(){
   if (!room) return '';
-  return `sync room=${room} id=${myId} ${isLeader() ? 'LEADER' : 'follower of ' + leaderId} peers=${connectedIds().join(',') || '-'}` +
+  return `sync room=${room} id=${myId}${isControl ? ' CONTROL' : ''} ${isLeader() ? 'LEADER' : 'follower of ' + leaderId} peers=${connectedIds().join(',') || '-'}` +
          (isLeader() ? '' : ` offset=${(clockOffset*1000).toFixed(1)}ms rtt=${(syncRtt*1000).toFixed(1)}ms`);
 }
 
 async function sigPost(msg){
-  try { await fetch(`signal/${encodeURIComponent(room)}`, { method:'POST', body: JSON.stringify({ from: myId, ...msg }) }); }
+  try { await fetch(`signal/${encodeURIComponent(room)}`, { method:'POST', body: JSON.stringify({ from: myId, role: MODE, ...msg }) }); }
   catch (e) { console.warn('[sync] signal post failed', e.message); }
 }
 async function sigPoll(){
@@ -422,7 +457,7 @@ function createPeer(id, offerer){
   const dc = pc.createDataChannel('sync', { negotiated: true, id: 0 });
   const peer = { pc, dc, open: false };
   peers.set(id, peer);
-  dc.onopen = () => { peer.open = true; console.log('[sync] channel open to', id); electLeader(); if (isLeader()) syncBroadcastState(); };
+  dc.onopen = () => { peer.open = true; console.log('[sync] channel open to', id); electLeader(); if (isLeader()) syncBroadcastState(); panelStatus(); };
   dc.onclose = () => { peer.open = false; electLeader(); };
   dc.onmessage = ev => handleData(id, JSON.parse(ev.data));
   pc.onicecandidate = ev => { if (ev.candidate) sigPost({ type:'ice', to:id, candidate: ev.candidate }); };
@@ -445,6 +480,7 @@ function createPeer(id, offerer){
 async function handleSig(m){
   const from = m.from;
   if (!from || from === myId) return;
+  peerRoles.set(from, m.role === 'control' ? 'control' : 'display');
   if (m.type === 'hello') {
     const p = peers.get(from);
     if (p && p.open) return;
@@ -473,7 +509,7 @@ function syncBroadcast(msg){ for (const id of connectedIds()) syncSend(id, msg);
 
 function stateMsg(){
   return { type:'state', epoch, cur: scenes[cur] && scenes[cur].name, nxt: nxt >= 0 ? scenes[nxt].name : null,
-           sceneStart, fadeStart };
+           sceneStart, fadeStart, overrides };
 }
 function syncBroadcastState(){ if (room && isLeader() && scenes.length) syncBroadcast(stateMsg()); }
 
@@ -494,16 +530,38 @@ function handleData(from, m){
     if (ci < 0) return;                       // config not caught up yet; next state msg will do
     const ni = m.nxt ? scenes.findIndex(s => s.name === m.nxt) : -1;
     epoch = m.epoch; cur = ci; nxt = ni; sceneStart = m.sceneStart; fadeStart = ni >= 0 ? m.fadeStart : -1;
+    overrides = m.overrides || {};
+    panelUpdate();
   } else if (m.type === 'skip') {
     if (isLeader()) requestSkip();
+  } else if (m.type === 'setParam') {
+    if (isLeader()) applyOverride(m.scene, m.key, m.value, true);
+  } else if (m.type === 'resetScene') {
+    if (isLeader()) { delete overrides[m.scene]; syncBroadcastState(); }
   }
 }
 
+let stateTimer = null;
+function applyOverride(sceneName, key, value, broadcast){
+  (overrides[sceneName] = overrides[sceneName] || {})[key] = value;
+  if (broadcast && isLeader() && !stateTimer) {           // coalesce slider drags to ~30 Hz
+    stateTimer = setTimeout(() => { stateTimer = null; syncBroadcastState(); }, 33);
+  }
+}
+// Controller-side entry point: local echo for the preview, then hand it to the leader.
+function setParam(sceneName, key, value){
+  applyOverride(sceneName, key, value, true);
+  if (!isLeader() && leaderId) syncSend(leaderId, { type:'setParam', scene: sceneName, key, value });
+}
+
+// Runs on a timer, not per frame: a hidden/throttled tab must still converge.
+let lastSlew = now();
 function syncSlewClock(){
+  const t = now(), dt = Math.min(1, t - lastSlew); lastSlew = t;
   if (targetOffset === null || isLeader()) return;
   const d = targetOffset - clockOffset;
   if (Math.abs(d) > 0.25) { clockOffset = targetOffset; console.log('[sync] clock jump', (d*1000).toFixed(0), 'ms'); }
-  else clockOffset += Math.max(-0.0005, Math.min(0.0005, d));   // ≤30 ms/s at 60 fps
+  else { const max = 0.03 * dt; clockOffset += Math.max(-max, Math.min(max, d)); }   // ≤30 ms per second
 }
 
 async function syncStart(){
@@ -514,8 +572,112 @@ async function syncStart(){
   await sigPost({ type:'hello' });
   setInterval(sigPoll, 500);
   setInterval(() => { if (peers.size === 0) sigPost({ type:'hello' }); }, 10000);
-  setInterval(() => { if (!isLeader()) syncSend(leaderId, { type:'ping', t0: now() }); }, 500);
+  setInterval(() => { if (!isLeader() && leaderId) syncSend(leaderId, { type:'ping', t0: now() }); }, 500);
+  setInterval(syncSlewClock, 50);
   setInterval(() => syncBroadcastState(), 1000);
+}
+
+// ===========================================================================
+// control panel (?mode=control): sliders for the current scene's params
+// ===========================================================================
+const panel = { scene: null, building: false };
+const $ = id => document.getElementById(id);
+function panelStatus(){
+  if (!isControl) return;
+  $('pstatus').textContent = !room ? 'add ?sync=<room> to the URL to control displays'
+    : !leaderId ? `room "${room}": waiting for a display…`
+    : `room "${room}": leader ${leaderId}, tiles ${connectedIds().filter(id => peerRoles.get(id) !== 'control').join(', ')}`;
+}
+function panelSceneName(){
+  if ($('plock').checked && panel.scene && scenes.some(s => s.name === panel.scene)) return panel.scene;
+  return cur >= 0 && scenes[cur] ? scenes[cur].name : null;
+}
+function sliderSpec(scene, key, v){
+  const c = (config.scenes.find(s => (s.name || s.module || s.shader) === scene.name) || {}).controls || {};
+  const spec = c[key] || {};
+  const a = Math.abs(v) || 1;
+  const min = spec.min !== undefined ? spec.min : (v < 0 ? -2 * a : 0);
+  const max = spec.max !== undefined ? spec.max : 2 * a;
+  const step = spec.step !== undefined ? spec.step : (max - min) / 200;
+  return { min, max, step };
+}
+function panelRebuild(){
+  if (!isControl) return;
+  const sel = $('pscene');
+  const want = panelSceneName();
+  sel.innerHTML = '';
+  for (const sc of scenes) { const o = document.createElement('option'); o.value = o.textContent = sc.name; sel.appendChild(o); }
+  if (want) sel.value = want;
+  panel.scene = want;
+  const box = $('psliders'); box.innerHTML = '';
+  const scene = scenes.find(s => s.name === want);
+  if (!scene) return;
+  const params = effParams(scene);
+  const numeric = Object.keys(params).filter(k => typeof params[k] === 'number' || Array.isArray(params[k]));
+  if (!numeric.length) { box.innerHTML = '<div class="status">no numeric params in this scene</div>'; }
+  for (const key of numeric) {
+    const v = params[key];
+    const comps = Array.isArray(v) ? v.length : 1;
+    for (let i = 0; i < comps; i++) {
+      const val = Array.isArray(v) ? v[i] : v;
+      const { min, max, step } = sliderSpec(scene, key, Array.isArray(scene.params[key]) ? scene.params[key][i] : scene.params[key]);
+      const row = document.createElement('div'); row.className = 'row';
+      const label = document.createElement('label'); label.textContent = comps > 1 ? `${key}[${i}]` : key;
+      const input = document.createElement('input'); input.type = 'range';
+      input.min = min; input.max = max; input.step = step; input.value = val;
+      input.dataset.key = key; input.dataset.comp = i;
+      const out = document.createElement('span'); out.className = 'val'; out.textContent = fmt(val);
+      input.addEventListener('input', () => {
+        const n = +input.value; out.textContent = fmt(n);
+        const curVal = effParams(scene)[key];
+        const next = Array.isArray(curVal) ? curVal.map((c, j) => (j === i ? n : c)) : n;
+        setParam(scene.name, key, next);
+      });
+      row.append(label, input, out); box.appendChild(row);
+    }
+  }
+  panelStatus();
+}
+function fmt(n){ return Math.abs(n) >= 100 ? n.toFixed(0) : Math.abs(n) >= 10 ? n.toFixed(1) : n.toFixed(3); }
+// Incoming state: move sliders the user is not touching, switch scene if not locked.
+function panelUpdate(){
+  if (!isControl) return;
+  const want = panelSceneName();
+  if (want !== panel.scene) { panelRebuild(); return; }
+  const scene = scenes.find(s => s.name === want);
+  if (!scene) return;
+  const params = effParams(scene);
+  for (const input of $('psliders').querySelectorAll('input[type=range]')) {
+    if (input === document.activeElement) continue;
+    const v = params[input.dataset.key]; if (v === undefined) continue;
+    const n = Array.isArray(v) ? v[+input.dataset.comp] : v;
+    if (+input.value !== n) { input.value = n; input.nextElementSibling.textContent = fmt(n); }
+  }
+  panelStatus();
+}
+if (isControl) {
+  $('pscene').addEventListener('change', e => { panel.scene = e.target.value; $('plock').checked = true; panelRebuild(); });
+  $('plock').addEventListener('change', () => { if (!$('plock').checked) panelRebuild(); });
+  $('pnext').addEventListener('click', requestSkip);
+  $('preset').addEventListener('click', () => {
+    const name = panelSceneName(); if (!name) return;
+    delete overrides[name];
+    if (isLeader()) syncBroadcastState(); else if (leaderId) syncSend(leaderId, { type:'resetScene', scene: name });
+    panelRebuild();
+  });
+  $('psave').addEventListener('click', async () => {
+    // merge live overrides into the loaded scenes.json and write it back; displays hot-reload it
+    const cfg = JSON.parse(configText);
+    for (const s of cfg.scenes) {
+      const name = s.name || s.module || s.shader;
+      if (overrides[name]) s.params = Object.assign({}, s.params || {}, overrides[name]);
+    }
+    try {
+      const r = await fetch('scenes', { method:'POST', body: JSON.stringify(cfg, null, 2) });
+      if (!r.ok) throw new Error(await r.text());
+      $('pstatus').textContent = 'saved scenes.json';
+    } catch (e) { showErr('save failed: ' + e.message); }
+  });
 }
 
 // ---- boot -----------------------------------------------------------------

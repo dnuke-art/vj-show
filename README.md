@@ -113,6 +113,29 @@ same scene from the front.
 - No STUN is needed on a LAN. If peers never connect, add
   `"sync": {"stun": ["stun:stun.l.google.com:19302"]}` to `scenes.json`.
 
+### Control mode
+
+    http://server:8000/?sync=show&id=phone&mode=control
+
+Open that on a phone or laptop in the same room and you get a slider for every numeric
+param of the scene that is playing, plus a small live preview. Moving a slider sends the
+value to the leader, which folds it into the state it already broadcasts, so every tile
+and any late joiner converges on the same value within a frame or two.
+
+- A control peer never becomes leader and never counts as a tile, whatever its id.
+- The panel follows whichever scene is playing unless you tick *lock scene* or pick one
+  from the dropdown. *next scene* skips. *reset overrides* drops the live tweaks for that
+  scene and goes back to what `scenes.json` says.
+- Tweaks live in the leader's memory until you press *save to scenes.json*, which merges
+  them into the file through the server. Displays hot-reload it, so the tweak is now part
+  of the show and survives restarts. That is the accretion loop: tweak, watch, save.
+- Slider ranges default to 0 to twice the value in `scenes.json` (symmetric for
+  negatives). Add `"controls": { "speed": { "min": 0, "max": 2, "step": 0.01 } }` to a
+  scene entry to set them explicitly. Array params get one slider per component.
+- Saved overrides stay in the leader's memory after a save. If you later hand-edit the
+  same key in `scenes.json`, press *reset overrides* or restart the leader so the file
+  value shows through.
+
 ## Running
 
     ./serve.sh          # http://localhost:8000 (static files + signaling)
@@ -131,7 +154,6 @@ Not yet:
 
 - **Snapshot mode.** Render a scene to a loop when its inputs (audio, OSC, MIDI) are
   missing, so input-dependent patches have a fallback instead of a dead frame.
-- **Remote param push** from a phone with a guided UI, rather than editing JSON.
 - **Input fallbacks** in the scene contract: a scene declares what it listens to and what
   it does when that is absent.
 - **SSAO** and a proper environment for the heart, once it can be compared side by side

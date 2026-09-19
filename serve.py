@@ -3,6 +3,7 @@
 
   GET  /signal/<room>?since=N&me=ID  -> {"seq": latest, "msgs": [...]}
   POST /signal/<room>  body JSON {"from": ID, "to": ID?, ...}
+  POST /scenes         body = full scenes.json; written atomically (control panel "save")
 
 Messages are kept in memory (last 500 per room). Peers poll every ~500 ms.
 Once a WebRTC connection is up the server is no longer needed for sync.
@@ -45,13 +46,22 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         u = urlparse(self.path)
-        if not u.path.startswith('/signal/'):
-            return self.send_error(404)
         n = int(self.headers.get('Content-Length', 0))
         try:
             body = json.loads(self.rfile.read(n) or b'{}')
         except ValueError:
             return self.send_error(400)
+        if u.path == '/scenes':                      # control panel "save": write scenes.json atomically
+            if not isinstance(body, dict) or not isinstance(body.get('scenes'), list):
+                return self.send_error(400, 'expected {scenes: [...]}')
+            tmp = os.path.join(ROOT, 'scenes.json.tmp')
+            with open(tmp, 'w') as f:
+                json.dump(body, f, indent=2)
+                f.write('\n')
+            os.replace(tmp, os.path.join(ROOT, 'scenes.json'))
+            return self._json({'ok': True})
+        if not u.path.startswith('/signal/'):
+            return self.send_error(404)
         with lock:
             r = rooms.setdefault(u.path[len('/signal/'):], {'seq': 0, 'msgs': []})
             r['seq'] += 1
