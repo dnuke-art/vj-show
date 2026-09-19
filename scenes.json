@@ -3,13 +3,79 @@
   "renderScale": 0.5,
   "reloadInterval": 5,
   "scenes": [
-    { "name": "warp-slow",   "shader": "scenes/warp.glsl",  "duration": 60,
-      "params": { "speed": 0.08, "warp": 1.4, "hueShift": 0.0 } },
-    { "name": "rings",       "shader": "scenes/rings.glsl", "duration": 45,
-      "params": { "speed": 0.3, "rings": 9.0, "wobble": 0.35 } },
-    { "name": "tunnel",      "shader": "scenes/tunnel.glsl", "duration": 50,
-      "params": { "speed": 0.5, "twist": 0.6, "glow": 1.2 } },
-    { "name": "warp-hot",    "shader": "scenes/warp.glsl",  "duration": 40,
-      "params": { "speed": 0.2, "warp": 2.6, "hueShift": 0.55 } }
+    {
+      "name": "heart-scatter",
+      "module": "scenes/heart.js",
+      "duration": 90,
+      "params": {
+        "amount": 0.5,
+        "shrink": 2.27,
+        "threshold": -1.82,
+        "falloff": 2.0,
+        "oscSpeed": 1.0,
+        "spinRate": 0.05,
+        "orbitAngle": 110,
+        "distance": 2.5,
+        "glowIntensity": 0.36
+      }
+    },
+    {
+      "name": "heart-front",
+      "module": "scenes/heart.js",
+      "duration": 60,
+      "params": {
+        "orbitAngle": 25,
+        "spinRate": 0.03,
+        "distance": 3.2,
+        "target": [
+          0,
+          -0.31,
+          0
+        ],
+        "amount": 0.5,
+        "shrink": 2.27,
+        "glowIntensity": 0.36
+      }
+    },
+    {
+      "name": "warp-slow",
+      "shader": "scenes/warp.glsl",
+      "duration": 60,
+      "params": {
+        "speed": 0.08,
+        "warp": 1.4,
+        "hueShift": 0.0
+      }
+    },
+    {
+      "name": "rings",
+      "shader": "scenes/rings.glsl",
+      "duration": 45,
+      "params": {
+        "speed": 0.3,
+        "rings": 9.0,
+        "wobble": 0.35
+      }
+    },
+    {
+      "name": "tunnel",
+      "shader": "scenes/tunnel.glsl",
+      "duration": 50,
+      "params": {
+        "speed": 0.5,
+        "twist": 0.6,
+        "glow": 1.2
+      }
+    },
+    {
+      "name": "warp-hot",
+      "shader": "scenes/warp.glsl",
+      "duration": 40,
+      "params": {
+        "speed": 0.2,
+        "warp": 2.6,
+        "hueShift": 0.55
+      }
+    }
   ]
 }

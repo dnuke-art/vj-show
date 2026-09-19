@@ -160,6 +160,29 @@ let sceneStart = 0, fadeStart = -1;   // in show-clock seconds
 let targetA = null, targetB = null;
 let renderW = 0, renderH = 0;
 
+function disposeEntry(p){
+  if (p.kind === 'module') { try { p.inst.dispose && p.inst.dispose(); } catch(e){ console.warn(e); } }
+  else gl.deleteProgram(p.prog);
+}
+function drawQuad(){ gl.bindVertexArray(vao); gl.drawArrays(gl.TRIANGLES, 0, 3); }
+// Perspective projection for this tile's sub-frustum of the full virtual canvas.
+function tileProjection(fovYDeg, near, far, fullW, fullH, ox, oy, w, h){
+  const top = near * Math.tan(fovYDeg * Math.PI / 360), right = top * fullW / fullH;
+  const l = -right + 2 * right * (ox / fullW), r = -right + 2 * right * ((ox + w) / fullW);
+  const b = -top + 2 * top * (oy / fullH), t = -top + 2 * top * ((oy + h) / fullH);
+  const m = new Float32Array(16);
+  m[0] = 2*near/(r-l); m[5] = 2*near/(t-b); m[8] = (r+l)/(r-l); m[9] = (t+b)/(t-b);
+  m[10] = -(far+near)/(far-near); m[11] = -1; m[14] = -2*far*near/(far-near);
+  return m;
+}
+// What a module scene gets: `export default function(gl, api){ return { draw(ctx), dispose() } }`
+const sceneApi = { compileProgram: (vs, fs) => {
+    const p = gl.createProgram(); const v = compile(gl.VERTEX_SHADER, vs); const f = compile(gl.FRAGMENT_SHADER, fs);
+    gl.attachShader(p, v); gl.attachShader(p, f); gl.linkProgram(p); gl.deleteShader(v); gl.deleteShader(f);
+    if (!gl.getProgramParameter(p, gl.LINK_STATUS)) { const log = gl.getProgramInfoLog(p); gl.deleteProgram(p); throw new Error(log); }
+    return p;
+  }, makeTarget, freeTarget, drawQuad, tileProjection, VERT };
+
 async function fetchText(url){
   const r = await fetch(url + (url.includes('?') ? '&' : '?') + 't=' + Date.now(), { cache:'no-store' });
   if (!r.ok) throw new Error(url + ': ' + r.status);
@@ -172,13 +195,21 @@ async function loadConfig(){
   const cfg = JSON.parse(text);
   const list = [];
   for (const s of cfg.scenes || []) {
-    const src = await fetchText(s.shader);
-    const have = programs.get(s.shader);
-    if (!have || have.src !== src) {
+    const key = s.module || s.shader;
+    const src = await fetchText(key);
+    const have = programs.get(key);
+    if (s.module) {
+      if (!have || have.src !== src) {
+        const mod = await import(new URL(key, location.href).href + '?v=' + hashStr(src) + '-' + src.length);
+        const inst = mod.default(gl, sceneApi);
+        if (have) disposeEntry(have);
+        programs.set(key, { src, kind:'module', inst, name: key });
+      }
+    } else if (!have || have.src !== src) {
       const prog = link(PRELUDE + src);
-      if (have) gl.deleteProgram(have.prog);
-      programs.set(s.shader, {
-        src, prog,
+      if (have) disposeEntry(have);
+      programs.set(key, {
+        src, kind:'shader', prog,
         u_time: gl.getUniformLocation(prog, 'u_time'),
         u_resolution: gl.getUniformLocation(prog, 'u_resolution'),
         u_fullResolution: gl.getUniformLocation(prog, 'u_fullResolution'),
@@ -188,15 +219,15 @@ async function loadConfig(){
       });
     }
     list.push({
-      name: s.name || s.shader,
-      shader: s.shader,
+      name: s.name || key,
+      shader: key,
       duration: +s.duration || 30,
       params: s.params || {},
       seed: hashStr(s.name || s.shader) * 100,
     });
   }
   for (const [path, p] of programs) {
-    if (!list.some(s => s.shader === path)) { gl.deleteProgram(p.prog); programs.delete(path); }
+    if (!list.some(s => s.shader === path)) { disposeEntry(p); programs.delete(path); }
   }
   const prevName = cur >= 0 && scenes[cur] ? scenes[cur].name : null;
   const nextName = nxt >= 0 && scenes[nxt] ? scenes[nxt].name : null;
@@ -235,6 +266,14 @@ window.addEventListener('resize', () => resize(false));
 // ---- rendering ------------------------------------------------------------
 function drawScene(scene, target, t){
   const p = programs.get(scene.shader);
+  if (p.kind === 'module') {
+    p.inst.draw({ target, time: t, params: scene.params, seed: scene.seed,
+                  fullW: target.w * COLS, fullH: target.h * ROWS,
+                  tileX: COL * target.w, tileY: (ROWS - 1 - ROW) * target.h });
+    gl.disable(gl.DEPTH_TEST); gl.disable(gl.CULL_FACE); gl.disable(gl.BLEND);
+    gl.bindVertexArray(vao);
+    return;
+  }
   gl.bindFramebuffer(gl.FRAMEBUFFER, target.fbo);
   gl.viewport(0, 0, target.w, target.h);
   gl.useProgram(p.prog);

@@ -21,6 +21,26 @@ to `fragColor`. Use `vuv()` for a centred, aspect-correct coordinate; it is
 computed on the full virtual canvas so tiled instances line up. `renderScale`
 renders at a fraction of the display size and upscales, for old GPUs.
 
+## Module scenes (meshes, post-processing, anything beyond one fragment shader)
+
+A scene entry with `"module": "scenes/foo.js"` instead of `"shader"` loads an ES module:
+
+    export default function create(gl, api) { return { draw(ctx), dispose() } }
+
+`draw` gets `{ target, time, params, seed, fullW, fullH, tileX, tileY }` and must leave
+its result in `target.fbo`. `api` provides `compileProgram(vs, fs)`, `makeTarget(w, h)`,
+`freeTarget`, `drawQuad()`, `VERT` (a fullscreen-triangle vertex shader) and
+`tileProjection(fovY, near, far, fullW, fullH, tileX, tileY, w, h)`, which returns the
+sub-frustum for this tile so 3D scenes line up across displays. Modules hot-reload like
+shaders: edit the file and the player re-imports it.
+
+`scenes/heart.js` is the TiXL `HeartScatter` graph (tixl-heart-project) ported this way:
+the OBJ is embedded, and SplitMeshVertices, SelectVertices (noise volume orbiting on
+OscillateVec3) and ScatterMeshFaces (Shrink) run in one vertex shader. Camera, material,
+light, fog and glow follow the graph's values and every one is overridable in `params`
+(see the `P('name', default)` calls in the file). SSAO is not ported. `heart-scatter`
+uses the graph's own top-down camera; `heart-front` is the same scene from the front.
+
 ## Multi-display sync
 
 Two or more instances can show tiles of one animation, frame-synced over WebRTC.
