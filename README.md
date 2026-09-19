@@ -130,8 +130,9 @@ and any late joiner converges on the same value within a frame or two.
   them into the file through the server. Displays hot-reload it, so the tweak is now part
   of the show and survives restarts. That is the accretion loop: tweak, watch, save.
 - Slider ranges default to 0 to twice the value in `scenes.json` (symmetric for
-  negatives). Add `"controls": { "speed": { "min": 0, "max": 2, "step": 0.01 } }` to a
-  scene entry to set them explicitly. Array params get one slider per component.
+  negatives). Add `&range=5` to the control URL to widen that to five times, for any
+  scene. A per-param `"controls": { "speed": { "min": 0, "max": 2, "step": 0.01 } }`
+  block in a scene entry overrides both. Array params get one slider per component.
 - Saved overrides stay in the leader's memory after a save. If you later hand-edit the
   same key in `scenes.json`, press *reset overrides* or restart the leader so the file
   value shows through.

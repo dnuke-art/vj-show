@@ -592,12 +592,14 @@ function panelSceneName(){
   if ($('plock').checked && panel.scene && scenes.some(s => s.name === panel.scene)) return panel.scene;
   return cur >= 0 && scenes[cur] ? scenes[cur].name : null;
 }
+// ?range=N on the control URL: sliders run 0..N×value (−N×|v|..N×|v| for negatives). Default 2.
+const RANGE = Math.max(1.01, +qs.get('range') || 2);
 function sliderSpec(scene, key, v){
   const c = (config.scenes.find(s => (s.name || s.module || s.shader) === scene.name) || {}).controls || {};
   const spec = c[key] || {};
   const a = Math.abs(v) || 1;
-  const min = spec.min !== undefined ? spec.min : (v < 0 ? -2 * a : 0);
-  const max = spec.max !== undefined ? spec.max : 2 * a;
+  const min = spec.min !== undefined ? spec.min : (v < 0 ? -RANGE * a : 0);
+  const max = spec.max !== undefined ? spec.max : RANGE * a;
   const step = spec.step !== undefined ? spec.step : (max - min) / 200;
   return { min, max, step };
 }
