@@ -143,8 +143,9 @@ kiosk displays on the same server find each other with no other URL params. `?sy
 still overrides it per window. The panel's status line turns orange when no display is
 listening in the room, because then the sliders only move the preview.
 
-Open that on a phone or laptop in the same room and you get a slider for every numeric
-param of the scene that is playing, plus a small live preview. Moving a slider sends the
+Open that on a phone or laptop in the same room and you get two monitors, PVW on the
+left (the scene the panel is editing) and PGM on the right (what the displays show,
+crossfade included), plus a slider for every numeric param of the scene being edited. Moving a slider sends the
 value to the leader, which folds it into the state it already broadcasts, so every tile
 and any late joiner converges on the same value within a frame or two.
 
