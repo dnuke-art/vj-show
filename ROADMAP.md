@@ -94,6 +94,12 @@ Order, durations, transition per scene, and enable/disable, editable on the cont
 and saved to `scenes.json`. Eventually time-of-day rules (calmer set after 6 pm) and a
 "gallery day" schedule so the show can open and close itself.
 
+## 7b. Serverless sync for the static copy
+
+Sync from GitHub Pages with no server of ours: PeerJS as a second signaling backend,
+rooms as well-known peer ids, election by claiming the id, star topology, shared key.
+Designed in [docs/RFC-0001-serverless-sync.md](docs/RFC-0001-serverless-sync.md).
+
 ## 8. Gallery hardening
 
 - Boot-to-show: systemd unit or autostart entry that runs `serve.sh` and `kiosk.sh` on
