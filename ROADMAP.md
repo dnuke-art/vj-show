@@ -124,6 +124,8 @@ which tile from inside the room. The two features answer setup in both direction
 sends that display a new tile. URL parameters become the initial value, not the only
 way, and unequal tiles and edge-blend overlaps get set from a phone.
 
+Design: [docs/RFC-0002-tile-map.md](docs/RFC-0002-tile-map.md).
+
 ## 7d. The show travels over the wire
 
 Today every display fetches `scenes.json` and the scene sources from wherever its page
