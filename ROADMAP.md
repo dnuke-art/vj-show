@@ -96,9 +96,11 @@ and saved to `scenes.json`. Eventually time-of-day rules (calmer set after 6 pm)
 
 ## 7b. Serverless sync for the static copy
 
-Sync from GitHub Pages with no server of ours: PeerJS as a second signaling backend,
-rooms as well-known peer ids, election by claiming the id, star topology, shared key.
-Designed in [docs/RFC-0001-serverless-sync.md](docs/RFC-0001-serverless-sync.md).
+PeerJS as the only signaling path: the public PeerServer for the GitHub Pages copy, a
+local PeerServer in the LAN server process for installations. Rooms as well-known peer
+ids, election by claiming the id, star topology, shared key. `serve.py` becomes a
+thirty-line Node script. Designed in
+[docs/RFC-0001-serverless-sync.md](docs/RFC-0001-serverless-sync.md).
 
 ## 8. Gallery hardening
 

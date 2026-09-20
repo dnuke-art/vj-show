@@ -1,11 +1,12 @@
-# RFC 0001: Serverless sync
+# RFC 0001: PeerJS everywhere
 
 | | |
 |---|---|
-| Status | Draft |
+| Status | Draft, revision 2 |
 | Date | 2026-09-20 |
-| Scope | How displays and controllers find each other and elect a leader when there is no `serve.py`, so a copy served from GitHub Pages (or any static host) syncs across displays. |
+| Scope | How displays and controllers find each other and elect a leader, using PeerJS as the only signaling path: the public PeerServer for a static copy (GitHub Pages), a local PeerServer on a LAN. The mailbox in `serve.py` goes away. |
 | Not in scope | The clock sync, state broadcast, param overrides and tiling protocol. Those don't change. |
+| Revision 2 | Revision 1 added PeerJS as a second backend beside the mailbox. This revision drops the mailbox: one transport everywhere, and the LAN runs a local PeerServer in the same process that serves the files. |
 
 ## 1. Motivation
 
@@ -19,9 +20,11 @@ The goal is: two laptops on the venue Wi-Fi each open
 `https://dnuke-art.github.io/vj-show/?grid=2,1&tile=…` and show one animation, and a
 phone opens `?mode=control` and drives them, with no machine on the LAN running anything.
 
-The LAN server stays. It's the reliable path for an installation, and it's the only
-path that supports *save to scenes.json*. This RFC adds a second signaling backend, it
-doesn't replace the first.
+A LAN server stays, for two reasons: a venue may have no internet, and *save to
+scenes.json* needs something that can write a file. But it stops being a bespoke
+mailbox. It becomes a stock PeerServer plus static files plus one save route, in one
+process. The player then has exactly one way of finding peers, and the only thing that
+differs between the hosted copy and an installation is which PeerServer it talks to.
 
 ## 2. Background: what sync is today
 
@@ -56,26 +59,48 @@ Two observations drive the design below:
 
 ## 3. Design
 
-### 3.1 Two signaling backends behind one interface
+### 3.1 One transport, one knob: which PeerServer
 
-```
-Transport
-  start(room, role)                 // begin discovery / connection
-  send(peerId, msg)                 // to one peer
-  broadcast(msg)                    // leader → all followers
-  on('open', (peerId, role, ua))    // a channel opened
-  on('close', peerId)
-  on('message', (peerId, msg))
-  leaderId                          // who leads, or null while unknown
-  isLeader
+The player talks to exactly one signaling system, a PeerServer. The only configuration
+is where it is:
+
+```jsonc
+"sync": {
+  "room": "show",
+  "peerserver": "auto"      // "auto" | "public" | "local" | { host, port, path, secure, key }
+}
 ```
 
-- `MailboxTransport`: the existing `serve.py` path, re-shaped as a star (see 3.5).
-- `PeerJsTransport`: new, uses the PeerJS library and a PeerJS signaling server.
+- `local`: the PeerServer mounted on the same host that served the page, at `/peerjs`.
+  This is the installation case: the page and the signaling come from one process.
+- `public`: PeerJS's free `0.peerjs.com`. This is the GitHub Pages case.
+- `auto` (default): `local` if the page's origin isn't a static host we know can't run
+  one (`*.github.io`), else `public`. A local attempt that fails to open its WebSocket
+  within a few seconds falls back to `public`, so a static copy on any host still works.
+- An explicit object for anything else, including someone's own PeerServer.
 
-Selection, in order: `?signal=mailbox|peerjs` on the URL; `sync.signal` in
-`scenes.json`; otherwise auto-detect by fetching `signal/<room>?since=0` once. JSON back
-means the mailbox is there; anything else (a 404 page on GitHub) means PeerJS.
+`?peerserver=` on the URL overrides the file, for the same reason `?sync=` does.
+
+```mermaid
+flowchart LR
+  subgraph "installation (LAN, may be offline)"
+    L[vj-show server<br/>static files + /peerjs + POST /scenes]
+    A1[display a] -- ws /peerjs --> L
+    B1[display b] -- ws /peerjs --> L
+    C1[control] -- ws /peerjs --> L
+    B1 <-- data channel --> A1
+    C1 <-- data channel --> A1
+  end
+  subgraph "hosted copy (GitHub Pages)"
+    G[static files]
+    P[0.peerjs.com]
+    A2[display a] -. https .-> G
+    B2[display b] -. https .-> G
+    A2 -- wss --> P
+    B2 -- wss --> P
+    B2 <-- data channel --> A2
+  end
+```
 
 ### 3.2 PeerJS in one paragraph
 
@@ -180,8 +205,7 @@ released by PeerServer after its socket dies, which can take a few seconds; the 
 just keeps trying. Control peers keep rendering their program monitor from the last state
 meanwhile.
 
-The mailbox backend gets the same shape: followers connect only to the leader, and if the
-leader vanishes the lowest remaining display id takes over, as today.
+There is no second backend to keep in step; this is the only election there is.
 
 ### 3.6 Connectivity
 
@@ -213,7 +237,32 @@ show. Two mitigations, both cheap:
 That's not authentication, it's a shared secret, and it's the right level for "don't let
 a stranger who guesses the URL hijack the wall."
 
-### 3.8 What doesn't work from a static host, on purpose
+### 3.8 The LAN server
+
+`serve.py` is replaced by a Node script, because the reference PeerServer is a Node
+package and hand-rolling its WebSocket protocol in Python is more code to own than the
+whole rest of the server. The script is about thirty lines:
+
+```js
+// server.js
+import express from 'express';
+import { ExpressPeerServer } from 'peer';
+const app = express();
+app.use(express.static('.', { etag: false, setHeaders: r => r.set('Cache-Control', 'no-store') }));
+app.post('/scenes', express.json({ limit: '1mb' }), (req, res) => { /* validate, write scenes.json atomically */ });
+const http = app.listen(8000);
+app.use('/peerjs', ExpressPeerServer(http, { path: '/' }));
+```
+
+`npm start` runs it. `serve.sh` and `kiosk.sh` keep their names. Python is no longer
+needed anywhere, and the server has one dependency tree instead of a custom protocol.
+A venue with no internet is fully served: page, signaling and save all come from this
+process, and the displays only need a browser.
+
+Why not keep `serve.py` and run `npx peer` beside it: two processes to start, two ports
+to know, and the save route and the signaling on different origins for no benefit.
+
+### 3.9 What doesn't work from a static host, on purpose
 
 - **Save to scenes.json.** There's no file to write. The button says so and stays
   disabled. Overrides still live in the leader and sync to everyone; they just don't
@@ -225,7 +274,8 @@ a stranger who guesses the URL hijack the wall."
 
 | Situation | Behaviour |
 |---|---|
-| PeerServer unreachable | Every window leads itself. Status line: "no signaling: running standalone". Retry every 10 s. |
+| PeerServer unreachable (local and public) | Every window leads itself. Status line: "no signaling: running standalone". Retry every 10 s. |
+| Local PeerServer absent but page served locally (someone used a plain static server) | `auto` falls back to `public` after the local WebSocket fails; status line says which server it's on. This is the failure that bit us with a stale `http.server` on port 8000; it now degrades instead of silently not syncing. |
 | Leader tab hidden > 5 min (Chrome intensive throttling) | Leader's timers slow to once a minute; state broadcast stalls. Followers keep rendering on their own clock. Fix is operational: a display is a visible fullscreen window. Recorded in the README. |
 | Follower loses channel | Keeps rendering from last state; reconnect loop; clock offset kept. |
 | Two displays claim at once | PeerServer serializes registrations; exactly one wins. The loser gets `unavailable-id` and follows. |
@@ -235,20 +285,24 @@ a stranger who guesses the URL hijack the wall."
 
 ## 5. Implementation plan
 
-1. Extract the transport interface from `index.html` and move the existing mailbox code
-   behind it. Switch it to a star while doing so. No behaviour change on the LAN; this
-   is the risky refactor and should land alone.
-2. Add `PeerJsTransport` with claim-or-connect, backoff and the `peers` list in `state`.
-3. Auto-detect backend; `?signal=` and `sync.signal` overrides.
-4. `sync.key` handshake on both transports.
-5. Control page: disable *save* when the transport has no server; show the peers list from
-   `state`.
-6. README and a "hosted, synced" section. Change the default room in `scenes.json` to a
-   generated token when the mailbox isn't present, or leave `show` and document it.
+1. `server.js`: Express static + `ExpressPeerServer` at `/peerjs` + `POST /scenes`.
+   `package.json` with `peer` and `express`. `serve.sh` runs it. Delete `serve.py`.
+2. In `index.html`, replace the mailbox/mesh code with the PeerJS transport:
+   claim-or-connect, star, backoff, `peers` list in `state`. The message handlers
+   (`handleData`) don't change.
+3. `sync.peerserver` with `auto` resolution and the local→public fallback;
+   `?peerserver=` override.
+4. `sync.key` handshake.
+5. Control page: *save* disabled when the page wasn't served by our server (a `HEAD
+   /scenes` probe at startup); peers list from `state`.
+6. README, roadmap, blog note. Default room stays `show` for the LAN; the README tells
+   people using the public server to pick a token.
 
-Rough size: 1 is half a day, 2–5 a day, 6 an hour. Test matrix: two Chrome tabs on
-Pages; two machines on one Wi-Fi; a phone as control on the same Wi-Fi; kill the leader
-and watch the wall not flicker.
+Rough size: 1 is an hour, 2–3 a day, 4–6 half a day. There is no risky refactor step
+any more because nothing is kept. Test matrix: two Chrome tabs on Pages; two machines on
+one Wi-Fi via the local server with Wi-Fi's internet turned off; a phone as control; kill
+the leader and watch the wall not flicker; serve the files from a plain static server
+and confirm the fallback to `public` and the disabled save.
 
 ## 6. Alternatives considered
 
@@ -266,13 +320,17 @@ and watch the wall not flicker.
   PeerServer proves unreliable in practice.
 - **Serving the mailbox from a tiny cloud function** and pointing Pages at it. Same
   dependency shape as a hosted service with more code to own.
+- **Keeping the mailbox as a second backend** (revision 1 of this RFC). Two signaling
+  paths, two elections to keep equivalent, and a refactor of working code just to make
+  room. Dropped once it was clear the LAN can run a stock PeerServer.
+- **A PeerServer in Python stdlib**, so `serve.py` could stay. The protocol is small
+  (an id endpoint, a WebSocket, five relayed message types) but WebSocket framing and
+  the heartbeat/expiry rules are enough surface to get subtly wrong, and every bug would
+  be ours. Node is already on the machines that would run this.
 
 ## 7. Open questions
 
 - Is the public PeerServer reliable enough for a demo, and do we want a
   `npx peer` note in the README for people who host their own static copy?
-- Should the mailbox backend switch to a star in step 1, or stay a mesh with the star
-  only in the PeerJS backend? Star is simpler and matches the protocol; the only cost is
-  that a follower can't see other followers directly, which nothing needs.
 - Does the control page want its own program state when it can reach a PeerServer but no
   display has claimed the room yet? Today it leads itself; that behaviour carries over.
