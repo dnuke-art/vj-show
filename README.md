@@ -1,10 +1,10 @@
 # vj-show
 
 A lightweight player for running generative visuals unattended in a gallery, on whatever
-hardware is already there. WebGL2 in a browser kiosk, no build step, no dependencies beyond
-Python 3 for the little server. Two or more displays can show tiles of one animation,
-frame-synced over WebRTC. Scenes are GLSL fragment shaders or small JS modules, and the
-whole show is a JSON file you can edit while it runs.
+hardware is already there. WebGL2 in a browser kiosk, no build step. Two or more displays
+can show tiles of one animation, frame-synced over WebRTC, whether the page comes from a
+LAN server or from GitHub Pages. Scenes are GLSL fragment shaders or small JS modules, and
+the whole show is a JSON file you can edit while it runs.
 
 ## Why
 
@@ -121,18 +121,32 @@ composed for, `"canvas": "16:9"`, and every window shows some rectangle of that 
     http://server:8000/?id=right&grid=2,1&tile=1,0
 
 - The room is `"sync": {"room": "show"}` in `scenes.json`, or `?sync=<room>` per
-  window. Instances in the same room find each other through the server's signaling
-  mailbox (`serve.py`, polled every 500 ms) and open a WebRTC data channel. Once the
-  channel is up the server is no longer needed.
-- The lowest `id` is leader. It owns the schedule (which scene, when the fade started)
-  and the show clock, and broadcasts state once a second and on every transition.
-- Followers ping the leader NTP-style, keep the lowest-RTT sample of the last sixteen,
-  and slew their clock onto it (about 30 ms/s, with a hard jump for errors over 250 ms).
-  If the leader disappears the survivors re-elect.
+  window. Windows in the same room meet through a [PeerJS](https://peerjs.com)
+  PeerServer and open a WebRTC data channel to the leader. After that the PeerServer is
+  only used to admit newcomers.
+- Which PeerServer: `"sync": {"peerserver": "auto"}` (default) uses the one built into
+  `server.js` when the page came from it, and the public `0.peerjs.com` when the page
+  came from a static host such as GitHub Pages. If the local one isn't there (a plain
+  static server) it falls back to public after a few seconds and the status line says
+  so. `"local"`, `"public"`, an object `{host, port, path, secure, key}` for your own
+  PeerServer, or `?peerserver=` per window, override it.
+- The room is a well-known peer id, `vjshow-<room>`. The first display to claim it is
+  leader: it owns the schedule and the show clock and broadcasts state once a second
+  and on every change. Every other window, including every controller, connects to
+  that id. Controllers never claim it.
+- Followers ping the leader twice a second, keep the lowest-RTT sample of the last
+  sixteen, and slew their clock onto it (about 30 ms/s, a hard jump for errors over
+  250 ms). Five seconds of silence means the leader is gone: displays race to claim the
+  id, the winner carries on from its mirrored state without a visible change, and
+  everyone else reattaches. Failover takes about six seconds.
+- On a public PeerServer anyone who knows the room name can join. Use a token for the
+  room name there, and set `"sync": {"key": "..."}` (or `?key=`): the leader drops
+  channels that don't present it in their first message.
 - Sync is bounded by each display's own vsync phase, so expect tiles within one frame
   of each other, not genlocked.
-- No STUN is needed on a LAN. If peers never connect, add
-  `"sync": {"stun": ["stun:stun.l.google.com:19302"]}` to `scenes.json`.
+- Offline venue: `server.js` serves the page, the PeerServer and the save route, and
+  the local PeerServer uses no STUN, so nothing needs the internet. `"sync": {"ice":
+  [...]}` overrides the ICE servers if you need to.
 
 ### Control mode
 
@@ -157,7 +171,9 @@ and any late joiner converges on the same value within a frame or two.
   `scenes.json` says.
 - Tweaks live in the leader's memory until you press *save to scenes.json*, which merges
   them into the file through the server. Displays hot-reload it, so the tweak is now part
-  of the show and survives restarts. That is the accretion loop: tweak, watch, save.
+  of the show and survives restarts. That is the accretion loop: tweak, watch, save. The
+  button is disabled when the page came from a static host, since there is nothing to
+  write to.
 - Slider ranges default to 0 to twice the value in `scenes.json` (symmetric for
   negatives). Add `&range=5` to the control URL to widen that to five times, for any
   scene. A per-param `"controls": { "speed": { "min": 0, "max": 2, "step": 0.01 } }`
@@ -169,17 +185,26 @@ and any late joiner converges on the same value within a frame or two.
 ## Hosted copy
 
 A static copy is served from GitHub Pages at <https://dnuke-art.github.io/vj-show/>.
-It has no signaling server, so it's a single display or a standalone control page
-(`?mode=control`). Multi-display sync and *save to scenes.json* need `serve.py` on the
-LAN; the status line says so when it can't reach a room.
+It syncs like the LAN version, through the public PeerServer, so two laptops on any
+network that allows peer-to-peer traffic can open it with a room and show one animation:
+
+    https://dnuke-art.github.io/vj-show/?sync=<token>&grid=2,1&tile=0,0
+    https://dnuke-art.github.io/vj-show/?sync=<token>&grid=2,1&tile=1,0
+    https://dnuke-art.github.io/vj-show/?sync=<token>&mode=control
+
+Pick a token, not a word, since the PeerServer is public. *Save to scenes.json* is
+disabled there because there is no server to write to; tweaks live in the leader until
+it restarts.
 
 ## Running
 
-    ./serve.sh          # http://localhost:8000 (static files + signaling)
+    ./serve.sh          # http://<this host>:8000: files + PeerServer at /peerjs + save (needs Node)
     ./kiosk.sh          # fullscreen Chromium on the display machine
+    npm test            # headless three-window sync test against a running server on :8765
 
 Keys: `s` stats, `n` skip to next scene (forwarded to the leader when synced), `f`
-fullscreen. Edit `scenes.json` or anything in `scenes/` while it runs.
+fullscreen. Edit `scenes.json` or anything in `scenes/` while it runs. Displays only
+need a browser; Node is only needed on the one machine that runs `serve.sh`.
 
 ## Status and what's next
 

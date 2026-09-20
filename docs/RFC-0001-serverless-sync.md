@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Draft, revision 2 |
+| Status | Implemented (2026-09-20). `server.js`, `index.html` sync section, `test/sync.test.mjs`. Deviations from the text: followers detect a dead leader by heartbeat (5 s without a pong) rather than waiting for ICE, and the clock takes samples outright until four are in, then slews. |
 | Date | 2026-09-20 |
 | Scope | How displays and controllers find each other and elect a leader, using PeerJS as the only signaling path: the public PeerServer for a static copy (GitHub Pages), a local PeerServer on a LAN. The mailbox in `serve.py` goes away. |
 | Not in scope | The clock sync, state broadcast, param overrides and tiling protocol. Those don't change. |

@@ -1,0 +1,19 @@
+{
+  "name": "vj-show",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Lightweight unattended gallery player: WebGL2 kiosk, PeerJS-synced multi-display tiles, hot-reloaded scenes",
+  "scripts": {
+    "start": "node server.js",
+    "vendor": "cp node_modules/peerjs/dist/peerjs.min.js vendor/peerjs.min.js",
+    "test": "node test/sync.test.mjs"
+  },
+  "dependencies": {
+    "express": "^5.2.1",
+    "peer": "^1.0.2"
+  },
+  "devDependencies": {
+    "peerjs": "^1.5.5",
+    "puppeteer-core": "^25.11.0"
+  }
+}

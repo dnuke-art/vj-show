@@ -2,6 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8">
+<link rel="icon" href="data:,">
 <title>vj-show player</title>
 <style>
   html, body { margin:0; height:100%; background:#000; overflow:hidden; cursor:none; }
@@ -38,6 +39,7 @@
 <div id="monlabels"><span>PVW · preview (what the panel edits)</span><span>PGM · program (what the displays show)</span></div>
 <div id="stats"></div>
 <div id="err"></div>
+<script src="vendor/peerjs.min.js"></script>
 <div id="panel">
   <div class="status" id="pstatus">connecting…</div>
   <div class="bar">
@@ -58,11 +60,12 @@
 // the list with timed crossfades, hot-reloads the list on change.
 //
 // Multi-instance: ?sync=<room>&id=<name>&grid=<cols>,<rows>&tile=<col>,<row>
-// Instances in the same room connect over WebRTC data channels. The peer with
-// the lowest id is leader: it owns the schedule and the show clock. Followers
-// NTP-style ping the leader and slew their clock onto it. Every scene is a pure
-// function of show time, so synced clocks + shared schedule = synced frames,
-// and each instance renders only its own tile of the full virtual canvas.
+// Instances in the same room meet through a PeerServer (the local one in server.js,
+// or the public 0.peerjs.com for a static copy) and open WebRTC data channels. The
+// first display to claim the room's peer id is leader: it owns the schedule and the
+// show clock. Followers NTP-style ping the leader and slew their clock onto it. Every
+// scene is a pure function of show time, so synced clocks + shared schedule = synced
+// frames, and each instance renders only its own tile of the full virtual canvas.
 // ---------------------------------------------------------------------------
 
 const PRELUDE = `#version 300 es
@@ -492,130 +495,183 @@ function requestSkip(){
 }
 
 // ===========================================================================
-// sync: WebRTC data channels, HTTP-polled signaling, leader-owned schedule
+// sync: PeerJS. One PeerServer (local or public). The room is a well-known peer id
+// that the first display claims; everyone else connects to it (a star). The leader
+// owns the schedule and the show clock; followers NTP-ping it and slew their clock.
 // ===========================================================================
-let room = qs.get('sync');          // or scenes.json sync.room, resolved in syncStart()
-const myId = qs.get('id') || Math.random().toString(36).slice(2, 8);
+let room = qs.get('sync');                 // or scenes.json sync.room, resolved in syncStart()
+let syncKey = qs.get('key') || null;       // or scenes.json sync.key: shared secret checked in hello
+const myTag = qs.get('id') || Math.random().toString(36).slice(2, 8);   // human-readable name for status
 const UA = (navigator.userAgent.match(/(Chrome|Chromium|Firefox|Safari|Edg)\/[\d.]+/) || [''])[0] + ' ' + navigator.platform;
-const peers = new Map();       // id -> { pc, dc, open, since }
-const peerRoles = new Map();   // id -> 'display' | 'control'  (control peers never lead, never count as tiles)
-let leaderId = myId;           // a controller leads itself until a display shows up, so PGM works standalone
-let sigSince = 0;
-let pingSamples = [];          // { rtt, offset } to leader, newest last
-let targetOffset = null;
-let syncRtt = 0;
+let myId = myTag;                          // PeerJS id once registered; equals leaderId while self-leading
+let leaderId = myId;                       // everyone leads itself until connected, so PGM works standalone
+let peer = null;                           // PeerJS Peer
+let leaderConn = null;                     // follower side: DataConnection to the leader
+const followers = new Map();               // leader side: id -> { conn, role, ua, tag }
+let statePeers = [];                       // follower side: the leader's peer list, from state
+let serverKind = null;                     // 'local' | 'public' | 'custom'
+let autoServer = false;                    // true when serverKind came from "auto" (allows local→public fallback)
+let reconnectTimer = null, rejected = false;
+let pingSamples = [];                      // { rtt, offset } to leader, newest last
+let lastPong = 0;                          // follower: last time the leader answered; silence > 5 s = leader gone
+let targetOffset = null, syncRtt = 0;
 
 function isLeader(){ return leaderId === myId; }
-function connectedIds(){ return [...peers].filter(([, p]) => p.open).map(([id]) => id); }
-function electLeader(){
-  const ids = connectedIds().filter(id => peerRoles.get(id) !== 'control');
-  if (!isControl) ids.push(myId);
-  ids.sort();
-  const was = leaderId;
-  leaderId = ids.length ? ids[0] : (isControl ? myId : null);
-  if (leaderId !== was) {
-    console.log('[sync] leader is', leaderId, isLeader() ? '(me)' : '');
-    pingSamples = []; targetOffset = null;
-    if (isLeader()) syncBroadcastState();
-    panelStatus();
-  }
+function roomPeerId(){
+  const safe = String(room).replace(/[^A-Za-z0-9_-]/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
+  return 'vjshow-' + (safe || 'show');
 }
+function peerList(){                        // [{id, tag, role, ua}], self included, for the status line
+  if (isLeader()) return [{ id: myId, tag: myTag, role: MODE, ua: UA }, ...[...followers].map(([id, f]) => ({ id, tag: f.tag, role: f.role, ua: f.ua }))];
+  return statePeers;
+}
+function tileTags(){ return peerList().filter(p => p.role !== 'control').map(p => p.tag || p.id); }
+function connectedIds(){ return isLeader() ? [...followers.keys()] : (leaderConn ? [leaderId] : []); }
 function syncStatsLine(){
   if (!room) return '';
-  return `sync room=${room} id=${myId}${isControl ? ' CONTROL' : ''} ${isLeader() ? 'LEADER' : 'follower of ' + leaderId} peers=${connectedIds().join(',') || '-'}` +
+  return `sync room=${room} ${serverKind || '-'} id=${myTag}${isControl ? ' CONTROL' : ''} ${isLeader() ? 'LEADER' : 'follower'} tiles=${tileTags().join(',') || '-'}` +
          (isLeader() ? '' : ` offset=${(clockOffset*1000).toFixed(1)}ms rtt=${(syncRtt*1000).toFixed(1)}ms`);
 }
 
-async function sigPost(msg){
-  try { await fetch(`signal/${encodeURIComponent(room)}`, { method:'POST', body: JSON.stringify({ from: myId, role: MODE, ua: UA, ...msg }) }); }
-  catch (e) { console.warn('[sync] signal post failed', e.message); }
+// ---- which PeerServer ------------------------------------------------------
+function resolveServerKind(){
+  const pref = qs.get('peerserver') || (config.sync && config.sync.peerserver) || 'auto';
+  autoServer = pref === 'auto';
+  if (typeof pref === 'object') return pref;
+  if (pref === 'auto') return (/\.github\.io$/.test(location.hostname) || location.protocol === 'file:') ? 'public' : 'local';
+  return pref;
 }
-async function sigPoll(){
-  try {
-    const r = await fetch(`signal/${encodeURIComponent(room)}?since=${sigSince}&me=${encodeURIComponent(myId)}&t=${Date.now()}`, { cache:'no-store' });
-    const { seq, msgs } = await r.json();
-    sigSince = seq;
-    for (const m of msgs) {
-      try { await handleSig(m); }
-      catch (e) { console.error('[sync] handling', m.type, 'from', m.from, 'failed:', e); showErr('sync ' + m.type + ' from ' + m.from + ': ' + e.message); }
+function peerOptions(kind){
+  const ice = (config.sync && config.sync.ice) || null;
+  if (kind === 'public') return { debug: 0, config: { iceServers: ice || [{ urls: 'stun:stun.l.google.com:19302' }] } };
+  if (kind === 'local') return { debug: 0, host: location.hostname, port: +location.port || (location.protocol === 'https:' ? 443 : 80),
+                                 path: '/peerjs', secure: location.protocol === 'https:', config: { iceServers: ice || [] } };
+  return Object.assign({ debug: 0 }, kind);          // custom object: { host, port, path, secure, key }
+}
+const SERVER_ERRORS = ['network', 'server-error', 'socket-error', 'socket-closed', 'ssl-unavailable', 'invalid-key'];
+function newPeer(id){
+  const p = new Peer(id, peerOptions(serverKind));
+  if (autoServer && serverKind === 'local') {         // no local PeerServer (plain static host): use the public one
+    const t = setTimeout(fail, 5000);
+    p.on('open', () => clearTimeout(t));
+    p.on('error', e => { if (SERVER_ERRORS.includes(e.type)) fail(); });
+    function fail(){
+      if (serverKind !== 'local' || peer !== p) return;
+      clearTimeout(t); console.warn('[sync] no local PeerServer at', location.host, '- using the public one');
+      serverKind = 'public'; connect();
     }
-  } catch (e) { /* server may be down; WebRTC keeps running */ }
+  }
+  return p;
 }
 
-function iceServers(){
-  const stun = (config.sync && config.sync.stun) || [];
-  return stun.map(u => ({ urls: u }));
+// ---- connect / claim / follow ---------------------------------------------
+function teardown(){
+  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+  if (peer) { const p = peer; peer = null; try { p.destroy(); } catch(e){} }
+  leaderConn = null; followers.clear();
 }
-
-function createPeer(id, offerer){
-  const old = peers.get(id);
-  if (old) { try { old.pc.close(); } catch(e){} }
-  const pc = new RTCPeerConnection({ iceServers: iceServers() });
-  const dc = pc.createDataChannel('sync', { negotiated: true, id: 0 });
-  const peer = { pc, dc, open: false, since: now() };
-  peers.set(id, peer);
-  dc.onopen = () => { peer.open = true; console.log('[sync] channel open to', id); electLeader(); if (isLeader()) syncBroadcastState(); panelStatus(); };
-  dc.onclose = () => { peer.open = false; electLeader(); };
-  dc.onmessage = ev => handleData(id, JSON.parse(ev.data));
-  pc.onicecandidate = ev => { if (ev.candidate) sigPost({ type:'ice', to:id, candidate: ev.candidate }); };
-  pc.onconnectionstatechange = () => {
-    if (['failed', 'closed', 'disconnected'].includes(pc.connectionState)) {
-      console.warn('[sync] peer', id, pc.connectionState);
-      peer.open = false;
-      if (peers.get(id) === peer) peers.delete(id);
-      try { pc.close(); } catch(e){}
-      electLeader();
-      setTimeout(() => sigPost({ type:'hello' }), 1000);
+function connect(){
+  teardown();
+  if (rejected || !room) return;
+  if (isControl) follow(); else claim();
+}
+function scheduleReconnect(why){
+  if (rejected || reconnectTimer) return;
+  const delay = isControl ? 3000 : 500 + Math.random() * 1500;
+  console.log('[sync] reconnect in', Math.round(delay), 'ms:', why);
+  reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(); }, delay);
+}
+// A display tries to be the room: register the room id. First one wins and leads.
+function claim(){
+  const id = roomPeerId();
+  const p = peer = newPeer(id);
+  p.on('open', () => {
+    if (peer !== p) return;
+    myId = id; leaderId = id; leaderConn = null; pingSamples = []; targetOffset = null;
+    console.log('[sync] leading room', room, 'via', serverKind, 'PeerServer');
+    p.on('connection', onFollower);
+    panelStatus(); syncBroadcastState();
+  });
+  p.on('error', e => {
+    if (peer !== p) return;
+    if (e.type === 'unavailable-id') { console.log('[sync] room', room, 'already has a leader; following'); follow(); }
+    else if (!SERVER_ERRORS.includes(e.type)) console.warn('[sync] peer error', e.type, e.message);
+  });
+  p.on('disconnected', () => { if (peer === p) scheduleReconnect('lost the PeerServer'); });
+}
+// Everyone else: register anonymously and open one channel to the room id.
+function follow(){
+  if (peer) { const old = peer; peer = null; try { old.destroy(); } catch(e){} }
+  followers.clear(); leaderConn = null;
+  const p = peer = newPeer(undefined);
+  p.on('open', id => {
+    if (peer !== p) return;
+    myId = id;
+    const conn = p.connect(roomPeerId(), { reliable: true, serialization: 'json', metadata: { role: MODE, tag: myTag } });
+    let opened = false;
+    conn.on('open', () => {
+      if (peer !== p) return;
+      opened = true; leaderConn = conn; leaderId = roomPeerId(); pingSamples = []; targetOffset = null; lastPong = now();
+      conn.send({ type: 'hello', role: MODE, tag: myTag, ua: UA, key: syncKey });
+      console.log('[sync] following room', room, 'via', serverKind, 'PeerServer');
+      panelStatus();
+    });
+    conn.on('data', m => handleData(leaderId, m));
+    conn.on('close', () => { if (leaderConn === conn) { leaderConn = null; if (!isLeader()) statePeers = []; } if (peer === p) scheduleReconnect('leader gone'); });
+    conn.on('error', e => console.warn('[sync] channel error', e.type || '', e.message || e));
+    setTimeout(() => { if (!opened && peer === p) scheduleReconnect('connect timed out'); }, 8000);
+  });
+  p.on('error', e => {
+    if (peer !== p) return;
+    if (e.type === 'peer-unavailable') scheduleReconnect(isControl ? 'no display in the room yet' : 'leader vanished');
+    else if (!SERVER_ERRORS.includes(e.type)) console.warn('[sync] peer error', e.type, e.message);
+  });
+  p.on('disconnected', () => { if (peer === p) scheduleReconnect('lost the PeerServer'); });
+}
+// Leader side: a follower connected. First message must be hello with the right key.
+function onFollower(conn){
+  let hello = false;
+  conn.on('data', m => {
+    if (!hello) {
+      if (!m || m.type !== 'hello') { conn.close(); return; }
+      if ((syncKey || m.key) && m.key !== syncKey) {
+        console.warn('[sync] rejected', m.tag || conn.peer, ': wrong key');
+        try { conn.send({ type: 'rejected', reason: 'wrong key' }); } catch(e){}
+        setTimeout(() => conn.close(), 200); return;
+      }
+      hello = true;
+      followers.set(conn.peer, { conn, role: m.role === 'control' ? 'control' : 'display', ua: m.ua || '', tag: m.tag || conn.peer });
+      console.log('[sync] follower', m.tag, m.role, m.ua);
+      panelStatus(); syncBroadcastState();
+      return;
     }
-  };
-  if (offerer) {
-    pc.createOffer().then(o => pc.setLocalDescription(o)).then(() => sigPost({ type:'offer', to:id, sdp: pc.localDescription }));
-  }
-  return peer;
+    handleData(conn.peer, m);
+  });
+  conn.on('close', () => { followers.delete(conn.peer); panelStatus(); syncBroadcastState(); });
+  conn.on('error', () => { followers.delete(conn.peer); });
 }
 
-async function handleSig(m){
-  const from = m.from;
-  if (!from || from === myId) return;
-  peerRoles.set(from, m.role === 'control' ? 'control' : 'display');
-  if (m.type === 'hello' && m.ua) console.log('[sync] hello from', from, m.role, m.ua);
-  if (m.type === 'hello') {
-    const p = peers.get(from);
-    if (p && p.open) return;
-    if (myId < from) createPeer(from, true);          // lower id offers
-    else if (!m.to) sigPost({ type:'hello', to: from }); // tell them we exist so they offer
-  } else if (m.type === 'offer') {
-    const peer = createPeer(from, false);
-    await peer.pc.setRemoteDescription(new RTCSessionDescription(m.sdp));
-    const a = await peer.pc.createAnswer();
-    await peer.pc.setLocalDescription(a);
-    sigPost({ type:'answer', to: from, sdp: peer.pc.localDescription });
-  } else if (m.type === 'answer') {
-    const peer = peers.get(from);
-    if (peer && peer.pc.signalingState === 'have-local-offer') await peer.pc.setRemoteDescription(new RTCSessionDescription(m.sdp));
-  } else if (m.type === 'ice') {
-    const peer = peers.get(from);
-    if (peer) { try { await peer.pc.addIceCandidate(new RTCIceCandidate(m.candidate)); } catch(e){ console.warn('[sync] ice from', from, e.message); } }
-  }
-}
-
+// ---- messages --------------------------------------------------------------
 function syncSend(id, msg){
-  const p = peers.get(id);
-  if (p && p.open) { try { p.dc.send(JSON.stringify(msg)); } catch(e){} }
+  try {
+    if (isLeader()) { const f = followers.get(id); if (f) f.conn.send(msg); }
+    else if (leaderConn) leaderConn.send(msg);
+  } catch(e){ console.warn('[sync] send failed', e.message); }
 }
-function syncBroadcast(msg){ for (const id of connectedIds()) syncSend(id, msg); }
-
+function syncBroadcast(msg){ for (const [id] of followers) syncSend(id, msg); }
 function stateMsg(){
   return { type:'state', epoch, cur: scenes[cur] && scenes[cur].name, nxt: nxt >= 0 ? scenes[nxt].name : null,
-           sceneStart, fadeStart, overrides };
+           sceneStart, fadeStart, overrides, peers: peerList().map(p => ({ id: p.id, tag: p.tag, role: p.role, ua: p.ua })) };
 }
-function syncBroadcastState(){ if (room && isLeader() && scenes.length) syncBroadcast(stateMsg()); }
+function syncBroadcastState(){ if (room && isLeader() && scenes.length && followers.size) syncBroadcast(stateMsg()); }
 
 function handleData(from, m){
+  if (!m || typeof m !== 'object') return;
   if (m.type === 'ping') {
+    const f = followers.get(from); if (f) f.lastPing = now();
     syncSend(from, { type:'pong', t0: m.t0, t1: showNow() });
   } else if (m.type === 'pong') {
-    const t2 = now();
+    const t2 = now(); lastPong = t2;
     const rtt = t2 - m.t0;
     const offset = m.t1 - (m.t0 + t2) / 2;   // local + offset ≈ leader show clock
     pingSamples.push({ rtt, offset });
@@ -623,13 +679,17 @@ function handleData(from, m){
     const best = pingSamples.reduce((a, b) => (b.rtt < a.rtt ? b : a));
     targetOffset = best.offset; syncRtt = best.rtt;
   } else if (m.type === 'state') {
-    if (from !== leaderId) return;
+    if (isLeader()) return;
+    statePeers = m.peers || [];
     const ci = scenes.findIndex(s => s.name === m.cur);
-    if (ci < 0) return;                       // config not caught up yet; next state msg will do
+    if (ci < 0) { panelStatus(); return; }        // config not caught up yet; next state msg will do
     const ni = m.nxt ? scenes.findIndex(s => s.name === m.nxt) : -1;
     epoch = m.epoch; cur = ci; nxt = ni; sceneStart = m.sceneStart; fadeStart = ni >= 0 ? m.fadeStart : -1;
     overrides = m.overrides || {};
     panelUpdate();
+  } else if (m.type === 'rejected') {
+    rejected = true; showErr('sync: this room rejected us (' + m.reason + '). Check sync.key / ?key=');
+    teardown(); panelStatus();
   } else if (m.type === 'skip') {
     if (isLeader()) requestSkip();
   } else if (m.type === 'setParam') {
@@ -651,7 +711,7 @@ function applyOverride(sceneName, key, value, broadcast){
 // Controller-side entry point: local echo for the preview, then hand it to the leader.
 function setParam(sceneName, key, value){
   applyOverride(sceneName, key, value, true);
-  if (!isLeader() && leaderId) syncSend(leaderId, { type:'setParam', scene: sceneName, key, value });
+  if (!isLeader()) syncSend(leaderId, { type:'setParam', scene: sceneName, key, value });
 }
 
 // Runs on a timer, not per frame: a hidden/throttled tab must still converge.
@@ -660,30 +720,30 @@ function syncSlewClock(){
   const t = now(), dt = Math.min(1, t - lastSlew); lastSlew = t;
   if (targetOffset === null || isLeader()) return;
   const d = targetOffset - clockOffset;
+  if (pingSamples.length < 4) { clockOffset = targetOffset; return; }        // settling: take the best sample outright
   if (Math.abs(d) > 0.25) { clockOffset = targetOffset; console.log('[sync] clock jump', (d*1000).toFixed(0), 'ms'); }
   else { const max = 0.03 * dt; clockOffset += Math.max(-max, Math.min(max, d)); }   // ≤30 ms per second
 }
 
-async function syncStart(){
+function syncStart(){
   if (!room && config.sync && config.sync.room) room = String(config.sync.room);
+  if (!syncKey && config.sync && config.sync.key) syncKey = String(config.sync.key);
   panelStatus();
   if (!room) return;
-  if (!window.RTCPeerConnection) { showErr('WebRTC not available; running unsynced'); return; }
-  console.log('[sync] room', room, 'id', myId, 'tile', TILE);
-  await sigPoll();                    // learn current seq so we skip stale messages
-  await sigPost({ type:'hello' });
-  setInterval(sigPoll, 500);
+  if (typeof Peer === 'undefined' || !window.RTCPeerConnection) { showErr('PeerJS/WebRTC not available; running unsynced'); return; }
+  serverKind = resolveServerKind();
+  console.log('[sync] room', room, 'as', myTag, MODE, 'via', serverKind, 'PeerServer; tile', TILE);
+  connect();
   setInterval(() => {
-    for (const [id, p] of peers) {
-      if (!p.open && now() - p.since > 20) {
-        console.warn('[sync] peer', id, 'never opened (', p.pc.signalingState, p.pc.iceConnectionState, '), retrying');
-        try { p.pc.close(); } catch(e){}
-        peers.delete(id);
-      }
-    }
-    if (peers.size === 0) sigPost({ type:'hello' });
-  }, 10000);
-  setInterval(() => { if (!isLeader() && leaderId) syncSend(leaderId, { type:'ping', t0: now() }); }, 500);
+    if (isLeader() || !leaderConn) return;
+    if (now() - lastPong > 5) { console.warn('[sync] leader silent for 5 s; assuming it is gone'); const c = leaderConn; leaderConn = null; try { c.close(); } catch(e){} scheduleReconnect('leader silent'); return; }
+    syncSend(leaderId, { type:'ping', t0: now() });
+  }, 500);
+  // leader: drop followers that stopped pinging (a closed tab is not always detected by ICE quickly)
+  setInterval(() => {
+    if (!isLeader()) return;
+    for (const [id, f] of followers) if (f.lastPing && now() - f.lastPing > 10) { console.warn('[sync] follower', f.tag, 'silent; dropping'); try { f.conn.close(); } catch(e){} followers.delete(id); panelStatus(); syncBroadcastState(); }
+  }, 2000);
   setInterval(syncSlewClock, 50);
   setInterval(() => syncBroadcastState(), 1000);
 }
@@ -696,14 +756,15 @@ const $ = id => document.getElementById(id);
 function panelStatus(){
   if (!isControl) return;
   const el = $('pstatus');
-  const tiles = connectedIds().filter(id => peerRoles.get(id) !== 'control');
   const editing = panelSceneName(), playing = cur >= 0 && scenes[cur] ? scenes[cur].name : null;
   const note = editing && editing !== playing ? `\npreviewing "${editing}"; displays are playing "${playing}" (press play now to switch)` : '';
-  if (!room) { el.style.color = '#f96'; el.textContent = 'NO ROOM: running standalone, nothing else is controlled.\nAdd ?sync=<room> to this URL, or "sync": {"room": "show"} to scenes.json.' + note; $('pplay').disabled = !editing || editing === playing; return; }
-  if (isLeader()) { el.style.color = '#f96'; el.textContent = `NO DISPLAY in room "${room}": running standalone, nothing else is controlled.\nDisplays must be open on this server in the same room (a display opened from an old server never joins: reload it).` + note; $('pplay').disabled = !editing || editing === playing; return; }
-  el.style.color = '#8c8';
-  el.textContent = `room "${room}": leader ${leaderId}, tiles ${tiles.join(', ')}` + note;
   $('pplay').disabled = !editing || editing === playing;
+  const via = serverKind ? ` via ${serverKind} PeerServer` : '';
+  if (rejected) { el.style.color = '#f66'; el.textContent = `REJECTED by room "${room}": wrong key. Set sync.key in scenes.json or ?key= on this URL.` + note; return; }
+  if (!room) { el.style.color = '#f96'; el.textContent = 'NO ROOM: running standalone, nothing else is controlled.\nAdd ?sync=<room> to this URL, or "sync": {"room": "show"} to scenes.json.' + note; return; }
+  if (isLeader()) { el.style.color = '#f96'; el.textContent = `NO DISPLAY in room "${room}"${via}: running standalone, nothing else is controlled.\nOpen a display in the same room; this page will attach to it.` + note; return; }
+  el.style.color = '#8c8';
+  el.textContent = `room "${room}"${via}: tiles ${tileTags().join(', ') || '-'}` + note;
 }
 function panelSceneName(){
   if ($('plock').checked && panel.scene && scenes.some(s => s.name === panel.scene)) return panel.scene;
@@ -782,6 +843,9 @@ function flash(btn, doneText){
 }
 if (isControl) {
   for (const b of document.querySelectorAll('#panel button')) b.addEventListener('click', () => flash(b));
+  fetch('scenes', { cache:'no-store' }).then(r => r.ok ? r.json() : null).catch(() => null).then(c => {
+    if (!c || !c.save) { $('psave').disabled = true; $('psave').title = 'no server to save to (static host); tweaks live in the leader until it restarts'; }
+  });
   $('pscene').addEventListener('change', e => { panel.scene = e.target.value; $('plock').checked = true; panelRebuild(); });
   $('plock').addEventListener('change', () => { if (!$('plock').checked) panelRebuild(); });
   $('pnext').addEventListener('click', requestSkip);

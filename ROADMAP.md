@@ -94,13 +94,13 @@ Order, durations, transition per scene, and enable/disable, editable on the cont
 and saved to `scenes.json`. Eventually time-of-day rules (calmer set after 6 pm) and a
 "gallery day" schedule so the show can open and close itself.
 
-## 7b. Serverless sync for the static copy
+## 7b. Serverless sync for the static copy — done
 
-PeerJS as the only signaling path: the public PeerServer for the GitHub Pages copy, a
-local PeerServer in the LAN server process for installations. Rooms as well-known peer
-ids, election by claiming the id, star topology, shared key. `serve.py` becomes a
-thirty-line Node script. Designed in
-[docs/RFC-0001-serverless-sync.md](docs/RFC-0001-serverless-sync.md).
+PeerJS is the only signaling path: the public PeerServer for the GitHub Pages copy, a
+local PeerServer in `server.js` for installations. Rooms are well-known peer ids, the
+first display to claim one leads, star topology, shared key, heartbeat failover in about
+six seconds. Design: [docs/RFC-0001-serverless-sync.md](docs/RFC-0001-serverless-sync.md).
+Test: `npm test`.
 
 ## 8. Gallery hardening
 
