@@ -166,6 +166,13 @@ and any late joiner converges on the same value within a frame or two.
   same key in `scenes.json`, press *reset overrides* or restart the leader so the file
   value shows through.
 
+## Hosted copy
+
+A static copy is served from GitHub Pages at <https://dnuke-art.github.io/vj-show/>.
+It has no signaling server, so it's a single display or a standalone control page
+(`?mode=control`). Multi-display sync and *save to scenes.json* need `serve.py` on the
+LAN; the status line says so when it can't reach a room.
+
 ## Running
 
     ./serve.sh          # http://localhost:8000 (static files + signaling)
