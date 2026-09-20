@@ -102,6 +102,52 @@ first display to claim one leads, star topology, shared key, heartbeat failover 
 six seconds. Design: [docs/RFC-0001-serverless-sync.md](docs/RFC-0001-serverless-sync.md).
 Test: `npm test`.
 
+## 7c. Tile map overlay and identify
+
+**What's missing on the wire:** a display's geometry. The hello and the leader's `peers`
+list carry role, tag, browser and key, not where the display sits on the canvas. Add
+`tile` (the rect asked for), `region` (the rect actually shown, which differs under
+`cover`), `fit` and the window's pixel size to the hello, forward them in `state.peers`,
+and re-send on resize or fit change.
+
+**Tile map:** an SVG layer over the PGM monitor on the control page, one rectangle per
+display in a colour keyed to its tag: solid for the shown region, dashed for the nominal
+tile where they differ, tag in the corner, pixel size and fit in small type. Overlaps
+hatched, uncovered canvas tinted, so gaps and double coverage are obvious. Toggle in
+the panel. Not a GL pass, so it can't touch the show.
+
+**Identify:** one broadcast from the control page makes every display flash its tag,
+tile rect and fit for a few seconds, large, so you can tell which physical screen is
+which tile from inside the room. The two features answer setup in both directions.
+
+**Later:** with every display's rect known, dragging a rectangle on the PGM monitor
+sends that display a new tile. URL parameters become the initial value, not the only
+way, and unequal tiles and edge-blend overlaps get set from a phone.
+
+## 7d. The show travels over the wire
+
+Today every display fetches `scenes.json` and the scene sources from wherever its page
+came from, so on a static host the edit loop is a git push and a deploy. Make the
+leader the source of the show instead: it loads `scenes.json` and the sources and
+pushes them to followers over the data channel, the same way it pushes the schedule.
+Followers compile from the received text; module scenes load from a blob URL. Keep the
+rule that a scene that fails to compile leaves the old one running, and have the leader
+compile before it broadcasts so one bad shader can't black out a wall.
+
+What falls out:
+
+- **Where the show comes from is pluggable:** server files on the LAN, a git repo or gist
+  the leader polls, a file or folder dropped on the control page.
+- **Adding a scene is dropping a `.glsl` or `.js` on the control page,** in either
+  deployment. Smallest first step: on the LAN, the control page posts the dropped file
+  to `server.js` and appends an entry with default params.
+- **Save writes to whatever you can reach:** the server's POST, the GitHub API with a
+  token, or a browser file save. The control page already probes for the first.
+
+Keep `scenes.json` as the one file, and keep it in git; its history is the record of how
+the show evolved. No shader editor in the control page: editing stays in a text editor,
+the control page moves files and values.
+
 ## 8. Gallery hardening
 
 - Boot-to-show: systemd unit or autostart entry that runs `serve.sh` and `kiosk.sh` on
