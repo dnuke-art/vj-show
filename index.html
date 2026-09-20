@@ -496,7 +496,8 @@ function requestSkip(){
 // ===========================================================================
 let room = qs.get('sync');          // or scenes.json sync.room, resolved in syncStart()
 const myId = qs.get('id') || Math.random().toString(36).slice(2, 8);
-const peers = new Map();       // id -> { pc, dc, open }
+const UA = (navigator.userAgent.match(/(Chrome|Chromium|Firefox|Safari|Edg)\/[\d.]+/) || [''])[0] + ' ' + navigator.platform;
+const peers = new Map();       // id -> { pc, dc, open, since }
 const peerRoles = new Map();   // id -> 'display' | 'control'  (control peers never lead, never count as tiles)
 let leaderId = myId;           // a controller leads itself until a display shows up, so PGM works standalone
 let sigSince = 0;
@@ -526,7 +527,7 @@ function syncStatsLine(){
 }
 
 async function sigPost(msg){
-  try { await fetch(`signal/${encodeURIComponent(room)}`, { method:'POST', body: JSON.stringify({ from: myId, role: MODE, ...msg }) }); }
+  try { await fetch(`signal/${encodeURIComponent(room)}`, { method:'POST', body: JSON.stringify({ from: myId, role: MODE, ua: UA, ...msg }) }); }
   catch (e) { console.warn('[sync] signal post failed', e.message); }
 }
 async function sigPoll(){
@@ -534,7 +535,10 @@ async function sigPoll(){
     const r = await fetch(`signal/${encodeURIComponent(room)}?since=${sigSince}&me=${encodeURIComponent(myId)}&t=${Date.now()}`, { cache:'no-store' });
     const { seq, msgs } = await r.json();
     sigSince = seq;
-    for (const m of msgs) await handleSig(m);
+    for (const m of msgs) {
+      try { await handleSig(m); }
+      catch (e) { console.error('[sync] handling', m.type, 'from', m.from, 'failed:', e); showErr('sync ' + m.type + ' from ' + m.from + ': ' + e.message); }
+    }
   } catch (e) { /* server may be down; WebRTC keeps running */ }
 }
 
@@ -548,7 +552,7 @@ function createPeer(id, offerer){
   if (old) { try { old.pc.close(); } catch(e){} }
   const pc = new RTCPeerConnection({ iceServers: iceServers() });
   const dc = pc.createDataChannel('sync', { negotiated: true, id: 0 });
-  const peer = { pc, dc, open: false };
+  const peer = { pc, dc, open: false, since: now() };
   peers.set(id, peer);
   dc.onopen = () => { peer.open = true; console.log('[sync] channel open to', id); electLeader(); if (isLeader()) syncBroadcastState(); panelStatus(); };
   dc.onclose = () => { peer.open = false; electLeader(); };
@@ -574,6 +578,7 @@ async function handleSig(m){
   const from = m.from;
   if (!from || from === myId) return;
   peerRoles.set(from, m.role === 'control' ? 'control' : 'display');
+  if (m.type === 'hello' && m.ua) console.log('[sync] hello from', from, m.role, m.ua);
   if (m.type === 'hello') {
     const p = peers.get(from);
     if (p && p.open) return;
@@ -581,16 +586,16 @@ async function handleSig(m){
     else if (!m.to) sigPost({ type:'hello', to: from }); // tell them we exist so they offer
   } else if (m.type === 'offer') {
     const peer = createPeer(from, false);
-    await peer.pc.setRemoteDescription(m.sdp);
+    await peer.pc.setRemoteDescription(new RTCSessionDescription(m.sdp));
     const a = await peer.pc.createAnswer();
     await peer.pc.setLocalDescription(a);
     sigPost({ type:'answer', to: from, sdp: peer.pc.localDescription });
   } else if (m.type === 'answer') {
     const peer = peers.get(from);
-    if (peer && peer.pc.signalingState === 'have-local-offer') await peer.pc.setRemoteDescription(m.sdp);
+    if (peer && peer.pc.signalingState === 'have-local-offer') await peer.pc.setRemoteDescription(new RTCSessionDescription(m.sdp));
   } else if (m.type === 'ice') {
     const peer = peers.get(from);
-    if (peer) { try { await peer.pc.addIceCandidate(m.candidate); } catch(e){} }
+    if (peer) { try { await peer.pc.addIceCandidate(new RTCIceCandidate(m.candidate)); } catch(e){ console.warn('[sync] ice from', from, e.message); } }
   }
 }
 
@@ -668,7 +673,16 @@ async function syncStart(){
   await sigPoll();                    // learn current seq so we skip stale messages
   await sigPost({ type:'hello' });
   setInterval(sigPoll, 500);
-  setInterval(() => { if (peers.size === 0) sigPost({ type:'hello' }); }, 10000);
+  setInterval(() => {
+    for (const [id, p] of peers) {
+      if (!p.open && now() - p.since > 20) {
+        console.warn('[sync] peer', id, 'never opened (', p.pc.signalingState, p.pc.iceConnectionState, '), retrying');
+        try { p.pc.close(); } catch(e){}
+        peers.delete(id);
+      }
+    }
+    if (peers.size === 0) sigPost({ type:'hello' });
+  }, 10000);
   setInterval(() => { if (!isLeader() && leaderId) syncSend(leaderId, { type:'ping', t0: now() }); }, 500);
   setInterval(syncSlewClock, 50);
   setInterval(() => syncBroadcastState(), 1000);
