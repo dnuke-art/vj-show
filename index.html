@@ -661,7 +661,8 @@ function syncSlewClock(){
 
 async function syncStart(){
   if (!room && config.sync && config.sync.room) room = String(config.sync.room);
-  if (!room) { panelStatus(); return; }
+  panelStatus();
+  if (!room) return;
   if (!window.RTCPeerConnection) { showErr('WebRTC not available; running unsynced'); return; }
   console.log('[sync] room', room, 'id', myId, 'tile', TILE);
   await sigPoll();                    // learn current seq so we skip stale messages
