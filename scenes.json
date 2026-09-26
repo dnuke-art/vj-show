@@ -1,5 +1,5 @@
 {
-  "canvas": "16:9",
+  "canvas": "9:16",
   "fit": "contain",
   "sync": {
     "room": "show"

@@ -128,7 +128,9 @@ composed for, `"canvas": "16:9"`, and every window shows some rectangle of that 
   `server.js` when the page came from it, and the public `0.peerjs.com` when the page
   came from a static host such as GitHub Pages. If the local one isn't there (a plain
   static server) it falls back to public after a few seconds and the status line says
-  so. `"local"`, `"public"`, an object `{host, port, path, secure, key}` for your own
+  so, except on a LAN address (`192.168.x`, `10.x`, `localhost`, ...), where it keeps
+  retrying the local one: an offline venue can't reach the public server, and a display
+  that falls back there never syncs with the others. `"local"`, `"public"`, an object `{host, port, path, secure, key}` for your own
   PeerServer, or `?peerserver=` per window, override it.
 - The room is a well-known peer id, `vjshow-<room>`. The first display to claim it is
   leader: it owns the schedule and the show clock and broadcasts state once a second
@@ -178,6 +180,11 @@ and any late joiner converges on the same value within a frame or two.
   negatives). Add `&range=5` to the control URL to widen that to five times, for any
   scene. A per-param `"controls": { "speed": { "min": 0, "max": 2, "step": 0.01 } }`
   block in a scene entry overrides both. Array params get one slider per component.
+- *reload displays* reloads every display in the room, the leader last; they re-form the
+  room within a few seconds. For a display that isn't in the room, add or change
+  `"reloadToken"` in `scenes.json`: every display reloads on its next poll. Neither can
+  make a window fullscreen (browsers need a gesture), so start display browsers in kiosk
+  mode, e.g. `msedge --kiosk <url> --edge-kiosk-type=fullscreen --no-first-run`.
 - Saved overrides stay in the leader's memory after a save. If you later hand-edit the
   same key in `scenes.json`, press *reset overrides* or restart the leader so the file
   value shows through.

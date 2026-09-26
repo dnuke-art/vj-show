@@ -40,4 +40,7 @@ app.use(express.static(ROOT, { etag: false, index: 'index.html' }));
 const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`vj-show: serving ${ROOT} on http://0.0.0.0:${PORT}  (PeerServer at /peerjs)`);
 });
-app.use('/peerjs', ExpressPeerServer(server, { path: '/', alive_timeout: 60000, expire_timeout: 5000 }));
+const peerServer = ExpressPeerServer(server, { path: '/', alive_timeout: 60000, expire_timeout: 5000 });
+peerServer.on('connection', c => console.log(new Date().toISOString(), 'peer +', c.getId()));
+peerServer.on('disconnect', c => console.log(new Date().toISOString(), 'peer -', c.getId()));
+app.use('/peerjs', peerServer);

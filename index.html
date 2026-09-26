@@ -49,6 +49,7 @@
     <button id="pnext">next scene</button>
     <button id="preset">reset overrides</button>
     <button id="psave">save to scenes.json</button>
+    <button id="preload">reload displays</button>
   </div>
   <div id="psliders"></div>
 </div>
@@ -256,10 +257,15 @@ async function fetchText(url){
   return r.text();
 }
 
+let bootToken;                                 // scenes.json reloadToken as of page load
 async function loadConfig(){
   const text = await fetchText('scenes.json');
   if (text === configText) return false;
   const cfg = JSON.parse(text);
+  // "reloadToken": change it in scenes.json and every display reloads, synced or not
+  const token = cfg.reloadToken === undefined ? null : cfg.reloadToken;
+  if (bootToken === undefined) bootToken = token;
+  else if (token !== bootToken) { location.reload(); return false; }
   const list = [];
   for (const s of cfg.scenes || []) {
     const key = s.module || s.shader;
@@ -551,7 +557,10 @@ function peerOptions(kind){
 const SERVER_ERRORS = ['network', 'server-error', 'socket-error', 'socket-closed', 'ssl-unavailable', 'invalid-key'];
 function newPeer(id){
   const p = new Peer(id, peerOptions(serverKind));
-  if (autoServer && serverKind === 'local') {         // no local PeerServer (plain static host): use the public one
+  // no local PeerServer (plain static host): use the public one. Not from a LAN address, since an
+  // offline venue can't reach it and a display that falls back there never syncs with the others.
+  const lan = /^(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|\[::1\]$)|\.local$/.test(location.hostname);
+  if (autoServer && serverKind === 'local' && !lan) {
     const t = setTimeout(fail, 5000);
     p.on('open', () => clearTimeout(t));
     p.on('error', e => { if (SERVER_ERRORS.includes(e.type)) fail(); });
@@ -698,6 +707,13 @@ function handleData(from, m){
     if (isLeader()) { delete overrides[m.scene]; syncBroadcastState(); }
   } else if (m.type === 'jump') {
     if (isLeader()) jumpTo(m.scene);
+  } else if (m.type === 'reloadAll') {            // from a controller: every display reloads, the leader last
+    if (!isLeader()) return;
+    console.log('[sync] reload requested by', from);
+    syncBroadcast({ type:'reload' });
+    setTimeout(() => location.reload(), 1000);
+  } else if (m.type === 'reload') {
+    if (!isControl) location.reload();
   }
 }
 
@@ -849,6 +865,7 @@ if (isControl) {
   $('pscene').addEventListener('change', e => { panel.scene = e.target.value; $('plock').checked = true; panelRebuild(); });
   $('plock').addEventListener('change', () => { if (!$('plock').checked) panelRebuild(); });
   $('pnext').addEventListener('click', requestSkip);
+  $('preload').addEventListener('click', () => { if (leaderId) syncSend(leaderId, { type:'reloadAll' }); });
   $('pplay').addEventListener('click', () => { const n = panelSceneName(); if (n) { jumpTo(n); flash($('pplay'), 'fading…'); } });
   $('preset').addEventListener('click', () => {
     const name = panelSceneName(); if (!name) return;
