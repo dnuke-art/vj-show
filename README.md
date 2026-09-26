@@ -180,6 +180,9 @@ and any late joiner converges on the same value within a frame or two.
   negatives). Add `&range=5` to the control URL to widen that to five times, for any
   scene. A per-param `"controls": { "speed": { "min": 0, "max": 2, "step": 0.01 } }`
   block in a scene entry overrides both. Array params get one slider per component.
+- *hold* stops the autopilot on the scene that is playing; *play now* and *next scene*
+  still work, and releasing it gives the current scene a full `duration`. It lives in the
+  leader's state, so it survives a failover but not a reload of every display.
 - *reload displays* reloads every display in the room, the leader last; they re-form the
   room within a few seconds. For a display that isn't in the room, add or change
   `"reloadToken"` in `scenes.json`: every display reloads on its next poll. Neither can

@@ -45,6 +45,7 @@
   <div class="bar">
     <select id="pscene"></select>
     <label><input type="checkbox" id="plock"> lock scene</label>
+    <label><input type="checkbox" id="phold"> hold</label>
     <button id="pplay">play now</button>
     <button id="pnext">next scene</button>
     <button id="preset">reset overrides</button>
@@ -225,6 +226,7 @@ let overrides = {};           // sceneName -> { param: value }, live tweaks laye
 function effParams(scene){ const o = overrides[scene.name]; return o ? Object.assign({}, scene.params, o) : scene.params; }
 let cur = -1, nxt = -1;
 let sceneStart = 0, fadeStart = -1;   // in show-clock seconds
+let hold = false;             // leader stops advancing the schedule; play now / next still work
 let targetA = null, targetB = null;
 let renderW = 0, renderH = 0;
 
@@ -423,7 +425,7 @@ function tick(){
     if (isLeader()) syncBroadcastState();
     panelUpdate();
   }
-  if (isLeader() && nxt < 0 && scenes.length > 1 && t - sceneStart >= scenes[cur].duration) {
+  if (isLeader() && !hold && nxt < 0 && scenes.length > 1 && t - sceneStart >= scenes[cur].duration) {
     startFade((cur + 1) % scenes.length);
     // anchor to the ideal boundary so timer latency doesn't slip the timetable; after a long
     // stall (a frozen leader) start from now rather than firing a burst of catch-up fades
@@ -471,7 +473,7 @@ function frame(){
       const mem = performance.memory ? (performance.memory.usedJSHeapSize / 1048576).toFixed(1) + ' MB heap' : '';
       statsEl.textContent =
         `fps ${fps.toFixed(1)}  ${canvas.width}x${canvas.height} -> ${renderW}x${renderH}  canvas ${config.canvas} ${fitMode()}  tile ${[TILE.x, TILE.y, TILE.w, TILE.h].map(v => +v.toFixed(3)).join(',')}\n` +
-        `scene ${scene.name} ${elapsed.toFixed(0)}/${scene.duration}s` + (nxt >= 0 ? ` -> ${scenes[nxt].name} ${(mixAmt*100).toFixed(0)}%` : '') + `\n` +
+        `scene ${scene.name} ${elapsed.toFixed(0)}/${scene.duration}s${hold ? ' HOLD' : ''}` + (nxt >= 0 ? ` -> ${scenes[nxt].name} ${(mixAmt*100).toFixed(0)}%` : '') + `\n` +
         `uptime ${((ln - bootT)/60).toFixed(1)} min  ${mem}\n` + syncStatsLine();
     }
   }
@@ -493,6 +495,11 @@ function jumpTo(name){
   if (i < 0 || i === cur || nxt >= 0) return;
   if (isLeader()) startFade(i);
   else if (leaderId) syncSend(leaderId, { type:'jump', scene: name });
+}
+function setHold(on){
+  if (!isLeader()) { if (leaderId) syncSend(leaderId, { type:'hold', on }); return; }
+  if (hold && !on && nxt < 0) sceneStart = showNow();   // released: the current scene gets a full duration
+  hold = on; syncBroadcastState(); panelUpdate();
 }
 function requestSkip(){
   if (scenes.length < 2 || nxt >= 0) return;
@@ -670,7 +677,7 @@ function syncSend(id, msg){
 function syncBroadcast(msg){ for (const [id] of followers) syncSend(id, msg); }
 function stateMsg(){
   return { type:'state', epoch, cur: scenes[cur] && scenes[cur].name, nxt: nxt >= 0 ? scenes[nxt].name : null,
-           sceneStart, fadeStart, overrides, peers: peerList().map(p => ({ id: p.id, tag: p.tag, role: p.role, ua: p.ua })) };
+           sceneStart, fadeStart, overrides, hold, peers: peerList().map(p => ({ id: p.id, tag: p.tag, role: p.role, ua: p.ua })) };
 }
 function syncBroadcastState(){ if (room && isLeader() && scenes.length && followers.size) syncBroadcast(stateMsg()); }
 
@@ -694,7 +701,7 @@ function handleData(from, m){
     if (ci < 0) { panelStatus(); return; }        // config not caught up yet; next state msg will do
     const ni = m.nxt ? scenes.findIndex(s => s.name === m.nxt) : -1;
     epoch = m.epoch; cur = ci; nxt = ni; sceneStart = m.sceneStart; fadeStart = ni >= 0 ? m.fadeStart : -1;
-    overrides = m.overrides || {};
+    overrides = m.overrides || {}; hold = !!m.hold;
     panelUpdate();
   } else if (m.type === 'rejected') {
     rejected = true; showErr('sync: this room rejected us (' + m.reason + '). Check sync.key / ?key=');
@@ -707,6 +714,8 @@ function handleData(from, m){
     if (isLeader()) { delete overrides[m.scene]; syncBroadcastState(); }
   } else if (m.type === 'jump') {
     if (isLeader()) jumpTo(m.scene);
+  } else if (m.type === 'hold') {
+    if (isLeader()) setHold(!!m.on);
   } else if (m.type === 'reloadAll') {            // from a controller: every display reloads, the leader last
     if (!isLeader()) return;
     console.log('[sync] reload requested by', from);
@@ -838,6 +847,7 @@ function fmt(n){ return Math.abs(n) >= 100 ? n.toFixed(0) : Math.abs(n) >= 10 ? 
 // Incoming state: move sliders the user is not touching, switch scene if not locked.
 function panelUpdate(){
   if (!isControl) return;
+  $('phold').checked = hold;
   const want = panelSceneName();
   if (want !== panel.scene) { panelRebuild(); return; }
   const scene = scenes.find(s => s.name === want);
@@ -865,6 +875,7 @@ if (isControl) {
   $('pscene').addEventListener('change', e => { panel.scene = e.target.value; $('plock').checked = true; panelRebuild(); });
   $('plock').addEventListener('change', () => { if (!$('plock').checked) panelRebuild(); });
   $('pnext').addEventListener('click', requestSkip);
+  $('phold').addEventListener('change', e => setHold(e.target.checked));
   $('preload').addEventListener('click', () => { if (leaderId) syncSend(leaderId, { type:'reloadAll' }); });
   $('pplay').addEventListener('click', () => { const n = panelSceneName(); if (n) { jumpTo(n); flash($('pplay'), 'fading…'); } });
   $('preset').addEventListener('click', () => {
@@ -894,9 +905,10 @@ if (isControl) {
   catch (e) { showErr('config: ' + e.message); }
   sceneStart = showNow();
   requestAnimationFrame(frame);
+  let pollFailed = false;
   setInterval(async () => {
-    try { await loadConfig(); }
-    catch (e) { showErr('reload: ' + e.message); }   // keep playing old config
+    try { await loadConfig(); if (pollFailed) { pollFailed = false; clearErr(); } }
+    catch (e) { pollFailed = true; showErr('reload: ' + e.message); }   // keep playing old config; clear once the server is back
   }, Math.max(1, config.reloadInterval) * 1000);
   syncStart();
 })();
