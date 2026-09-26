@@ -615,6 +615,19 @@ function claim(){
   });
   p.on('disconnected', () => { if (peer === p) scheduleReconnect('lost the PeerServer'); });
 }
+// Chrome offers WebRTC candidates only on the default-route interface until the page has
+// media permission. A controller on a machine whose internet is Wi-Fi but whose displays are
+// on wired LAN then never reaches the leader. Asking for the mic once (never used: the tracks
+// stop at once) makes it offer every interface. Needs a secure context, i.e. localhost.
+let unlockTried = false;
+function unlockInterfaces(){
+  if (!isControl || unlockTried || !window.isSecureContext || !navigator.mediaDevices) return;
+  unlockTried = true;
+  console.log('[sync] leader unreachable; asking for mic permission so WebRTC can use every interface');
+  navigator.mediaDevices.getUserMedia({ audio: true })
+    .then(s => { s.getTracks().forEach(t => t.stop()); connect(); })
+    .catch(e => console.warn('[sync] no mic permission:', e.message));
+}
 // Everyone else: register anonymously and open one channel to the room id.
 function follow(){
   if (peer) { const old = peer; peer = null; try { old.destroy(); } catch(e){} }
@@ -635,7 +648,7 @@ function follow(){
     conn.on('data', m => handleData(leaderId, m));
     conn.on('close', () => { if (leaderConn === conn) { leaderConn = null; if (!isLeader()) statePeers = []; } if (peer === p) scheduleReconnect('leader gone'); });
     conn.on('error', e => console.warn('[sync] channel error', e.type || '', e.message || e));
-    setTimeout(() => { if (!opened && peer === p) scheduleReconnect('connect timed out'); }, 8000);
+    setTimeout(() => { if (!opened && peer === p) { unlockInterfaces(); scheduleReconnect('connect timed out'); } }, 8000);
   });
   p.on('error', e => {
     if (peer !== p) return;

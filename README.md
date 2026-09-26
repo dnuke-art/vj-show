@@ -166,6 +166,11 @@ value to the leader, which folds it into the state it already broadcasts, so eve
 and any late joiner converges on the same value within a frame or two.
 
 - A control peer never becomes leader and never counts as a tile, whatever its id.
+- Controller on a machine whose internet is Wi-Fi but whose displays are on a wired LAN:
+  Chrome only offers WebRTC candidates on the default-route interface, so it can't reach
+  the leader. Open the panel at `http://localhost:8000/?mode=control`; after a failed
+  attempt it asks for mic permission once (never recorded), which makes Chrome offer every
+  interface. Devices whose default route is the display LAN don't need this.
 - The panel and its preview follow whichever scene is playing unless you tick *lock
   scene* or pick one from the dropdown. Picking a scene previews it locally while the
   displays keep playing the show; *play now* fades the show to it. *next scene* skips.
