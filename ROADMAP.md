@@ -82,6 +82,39 @@ scene type is a few lines. The interesting part is the policy: when to fall back
 keeping the loop's phase on show time so tiles agree (a loop is a pure function of time
 too, `t mod length`).
 
+## 5b. Stream input
+
+A live video feed as a scene source: another renderer (TiXL, TouchDesigner, a camera)
+playing into the show, full screen or as a texture a shader samples. Browsers can't take
+NDI, RTSP or Spout, so the feed has to arrive as WebRTC:
+
+```
+renderer --Spout/Syphon/NDI--> OBS --WHIP--> MediaMTX (next to server.js) --WebRTC (WHEP)--> displays
+```
+
+- **Spout/Syphon** are same-machine GPU texture sharing (Windows/Mac), the hop from the
+  renderer into OBS. **NDI** is the hop when the renderer is on another machine; OBS
+  receives it with the DistroAV plugin. None of the three reach a browser.
+- **OBS** pushes WebRTC with WHIP directly; ffmpeg or OBS can also push RTSP, SRT or RTMP.
+- **MediaMTX** is one binary that runs offline on the LAN, takes any of those in, and
+  serves WebRTC out. `serve.sh` could start it when present.
+- **Not HLS** (seconds of latency). **MJPEG over HTTP** is the no-media-server fallback:
+  an `<img>` any browser plays, heavy but fine on a wired LAN.
+
+Player side: a `"stream": "<WHEP URL>"` scene type that plays into a `<video>` and uploads
+it as a texture each frame, exposed to shader scenes as `u_stream`, so a stream can be
+shown as-is or processed. When the stream is missing or stalls, the scene falls back per
+the input contract in 4 (a generated scene, or a snapshot from 5), and the autopilot
+skips it rather than showing a frozen frame.
+
+**The catch: it breaks frame sync.** Everything else on a wall is a pure function of show
+time, so tiles agree exactly. A stream is not. Each display receives it separately with
+its own jitter buffer, so screens drift apart by a frame or two. Fine for a mirrored image
+or a slow feed; visible on a fast feed spanning tiles. Mitigations to try in that order:
+mark stream scenes as mirror-only; have each display report its playout delay and the
+leader set a common target delay (WebRTC's `jitterBufferTarget`); only then anything
+cleverer.
+
 ## 6. Variations as a button
 
 "Duplicate this scene with the current overrides as a new entry" on the control page.
@@ -187,7 +220,7 @@ environment instead of the one-band stand-in.
 
 ## Not planned
 
-- **NDI or pixel streaming.** Tiles rendering from a shared clock replaced the need. If a
-  pixel feed is ever wanted (a stream to the web, say), it is one MediaRecorder on the
-  control page, not part of the display path.
+- **NDI or pixel streaming as the display path.** Tiles rendering from a shared clock
+  replaced the need. A stream as one scene's input is 5b; sending the show out (a stream
+  to the web, say) is one MediaRecorder on the control page.
 - **A node editor.** Authoring stays in text and in TiXL; the player is a player.
