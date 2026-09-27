@@ -204,8 +204,10 @@ and any late joiner converges on the same value within a frame or two.
   5 s so you can tell which is which. The *canvas* field changes just the aspect
   (`9:16`, `36:16`, `1:1`) and leaves tiles alone. The layout lives in the leader's
   state, overrides `?canvas=` and `?tile=`, and *save* writes it to `scenes.json`
-  `"layout"` so it applies at the next start; *clear layout* goes back to the URLs and
-  `scenes.json`. It's keyed by display tag, so give kiosks a stable `&id=left` etc.
+  `"layout"` so it applies at the next start. *zoom* (0.5–4×, double-click for 1×)
+  magnifies the whole canvas about its centre to fill the screens: each display re-renders
+  its part at the new scale (sharp, and a longer lens for 3D scenes), cropping the
+  edges. *clear layout* goes back to the URLs and `scenes.json`. It's keyed by display tag, so give kiosks a stable `&id=left` etc.
   (a display without `?id=` keeps its random tag only until its window closes).
 - Saved overrides stay in the leader's memory after a save. If you later hand-edit the
   same key in `scenes.json`, press *reset overrides* or restart the leader so the file

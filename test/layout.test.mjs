@@ -25,6 +25,15 @@ await c.evaluate(() => { const i = document.getElementById('lcanvas'); i.value =
 check('canvas field keeps tiles, changes aspect', await tile(d), '0.5,0,0.5,1 1:1');
 await c.click('#lident'); await sleep(800);
 check('identify shows the tag', await a.evaluate(() => getComputedStyle(document.getElementById('ident')).display + ' ' + document.getElementById('ident').firstChild.textContent), 'flex a');
+const zoomTo = z => c.evaluate(z => { const i = document.getElementById('lzoom'); i.value = z; i.dispatchEvent(new Event('input')); }, z);
+const uni = p => p.evaluate(() => { const u = tileUniforms({ w: 100, h: 100 }); return [u.fullW, u.fullH, u.tileX, u.tileY].map(v => +v.toFixed(1)).join(','); });
+// canvas 1:1, b holds the right half: region X .5 W .5. At 2x it shows X .5..75, Y .25..75.
+check('b before zoom (fullW,fullH,tileX,tileY on 100px)', await uni(d), '200,100,100,0');
+await zoomTo(2); await sleep(1500);
+check('zoom reaches the displays', String(await d.evaluate(() => zoomLevel())), '2');
+check('zoom 2x magnifies b about the canvas centre', await uni(d), '400,200,200,50');
+await zoomTo(1); await sleep(1500);
+check('zoom back to 1', await uni(d), '200,100,100,0');
 const statsShown = async () => (await Promise.all([a, d].map(p => p.evaluate(() => getComputedStyle(document.getElementById('stats')).display)))).join(',');
 await c.click('#pstats'); await sleep(1500);
 check('stats checkbox shows the overlay on every display', await statsShown(), 'block,block');
