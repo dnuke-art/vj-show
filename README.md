@@ -199,13 +199,13 @@ and any late joiner converges on the same value within a frame or two.
 
 ## Hosted copy
 
-A static copy is served from GitHub Pages at <https://dnuke-art.github.io/vj-show/>.
+A static copy is served from GitHub Pages at <https://pixeldestrukt.github.io/vj-show/>.
 It syncs like the LAN version, through the public PeerServer, so two laptops on any
 network that allows peer-to-peer traffic can open it with a room and show one animation:
 
-    https://dnuke-art.github.io/vj-show/?sync=<token>&grid=2,1&tile=0,0
-    https://dnuke-art.github.io/vj-show/?sync=<token>&grid=2,1&tile=1,0
-    https://dnuke-art.github.io/vj-show/?sync=<token>&mode=control
+    https://pixeldestrukt.github.io/vj-show/?sync=<token>&grid=2,1&tile=0,0
+    https://pixeldestrukt.github.io/vj-show/?sync=<token>&grid=2,1&tile=1,0
+    https://pixeldestrukt.github.io/vj-show/?sync=<token>&mode=control
 
 Pick a token, not a word, since the PeerServer is public. *Save to scenes.json* is
 disabled there because there is no server to write to; tweaks live in the leader until
