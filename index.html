@@ -118,6 +118,9 @@ void main(){
 }`;
 
 const qs = new URLSearchParams(location.search);
+// This page's code version: a hash of this script. Sent in hello/state so the control page
+// can flag a display that hasn't reloaded since an update.
+const BUILD = (() => { let h = 2166136261; for (const ch of document.currentScript.textContent) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619); } return (h >>> 0).toString(36); })();
 const MODE = qs.get('mode') === 'control' ? 'control' : 'display';
 const isControl = MODE === 'control';
 if (isControl) document.body.classList.add('control');
@@ -226,6 +229,7 @@ const URL_TILE = TILE;
 // "save" writes it to scenes.json "layout", which applies when no live layout is set.
 // A display whose tag isn't in tiles keeps its URL tile.
 let layout = null;
+let layoutSentAt = -1e9;                     // control: when this page last changed the layout itself
 function activeLayout(){ return layout || config.layout || null; }
 function layoutTile(){
   const L = activeLayout();
@@ -554,7 +558,7 @@ function setLayout(L){
   if (L && !L.canvas) delete L.canvas;
   if (L && L.zoom === 1) delete L.zoom;
   layout = L; resize(true); panelLayout(true);                     // local echo; the leader's state confirms
-  if (isLeader()) syncBroadcastState(); else if (leaderId) syncSend(leaderId, { type:'layout', layout: L });
+  if (isLeader()) syncBroadcastState(); else if (leaderId) { layoutSentAt = now(); syncSend(leaderId, { type:'layout', layout: L }); }
 }
 let identTimer = null;
 function identify(){
@@ -610,7 +614,7 @@ function roomPeerId(){
   return 'vjshow-' + (safe || 'show');
 }
 function peerList(){                        // [{id, tag, role, ua}], self included, for the status line
-  if (isLeader()) return [{ id: myId, tag: myTag, role: MODE, ua: UA, win: winSize() }, ...[...followers].map(([id, f]) => ({ id, tag: f.tag, role: f.role, ua: f.ua, win: f.win }))];
+  if (isLeader()) return [{ id: myId, tag: myTag, role: MODE, ua: UA, win: winSize(), build: BUILD }, ...[...followers].map(([id, f]) => ({ id, tag: f.tag, role: f.role, ua: f.ua, win: f.win, build: f.build }))];
   return statePeers;
 }
 function tileTags(){ return peerList().filter(p => p.role !== 'control').map(p => p.tag || p.id); }
@@ -741,7 +745,7 @@ function dial(p){
   conn.on('open', () => {
     if (!live()) return;
     opened = true; leaderConn = conn; leaderId = roomPeerId(); pingSamples = []; targetOffset = null; lastPong = now();
-    conn.send({ type: 'hello', role: MODE, tag: myTag, ua: UA, key: syncKey, win: winSize() });
+    conn.send({ type: 'hello', role: MODE, tag: myTag, ua: UA, key: syncKey, win: winSize(), build: BUILD });
     console.log('[sync] following room', room, 'via', serverKind, 'PeerServer');
     panelStatus();
   });
@@ -762,7 +766,7 @@ function onFollower(conn){
         setTimeout(() => conn.close(), 200); return;
       }
       hello = true;
-      followers.set(conn.peer, { conn, role: m.role === 'control' ? 'control' : 'display', ua: m.ua || '', tag: m.tag || conn.peer, win: m.win || null });
+      followers.set(conn.peer, { conn, role: m.role === 'control' ? 'control' : 'display', ua: m.ua || '', tag: m.tag || conn.peer, win: m.win || null, build: m.build || null });
       console.log('[sync] follower', m.tag, m.role, m.ua);
       panelStatus(); syncBroadcastState();
       return;
@@ -783,7 +787,7 @@ function syncSend(id, msg){
 function syncBroadcast(msg){ for (const [id] of followers) syncSend(id, msg); }
 function stateMsg(){
   return { type:'state', epoch, cur: scenes[cur] && scenes[cur].name, nxt: nxt >= 0 ? scenes[nxt].name : null,
-           sceneStart, fadeStart, overrides, hold, layout, stats: roomStats, peers: peerList().map(p => ({ id: p.id, tag: p.tag, role: p.role, ua: p.ua, win: p.win })) };
+           sceneStart, fadeStart, overrides, hold, layout, stats: roomStats, build: BUILD, peers: peerList().map(p => ({ id: p.id, tag: p.tag, role: p.role, ua: p.ua, win: p.win, build: p.build })) };
 }
 function syncBroadcastState(){ if (room && isLeader() && scenes.length && followers.size) syncBroadcast(stateMsg()); }
 
@@ -803,7 +807,7 @@ function handleData(from, m){
   } else if (m.type === 'state') {
     if (isLeader()) return;
     statePeers = m.peers || [];
-    if (JSON.stringify(m.layout || null) !== JSON.stringify(layout)) { layout = m.layout || null; resize(true); panelLayout(true); }
+    if (now() - layoutSentAt > 1 && JSON.stringify(m.layout || null) !== JSON.stringify(layout)) { layout = m.layout || null; resize(true); panelLayout(true); }
     const ci = scenes.findIndex(s => s.name === m.cur);
     if (ci < 0) { panelStatus(); return; }        // config not caught up yet; next state msg will do
     const ni = m.nxt ? scenes.findIndex(s => s.name === m.nxt) : -1;
@@ -907,8 +911,10 @@ function panelStatus(){
   if (rejected) { el.style.color = '#f66'; el.textContent = `REJECTED by room "${room}": wrong key. Set sync.key in scenes.json or ?key= on this URL.` + note; return; }
   if (!room) { el.style.color = '#f96'; el.textContent = 'NO ROOM: running standalone, nothing else is controlled.\nAdd ?sync=<room> to this URL, or "sync": {"room": "show"} to scenes.json.' + note; return; }
   if (isLeader()) { el.style.color = '#f96'; el.textContent = `NO DISPLAY in room "${room}"${via}: running standalone, nothing else is controlled.\nOpen a display in the same room; this page will attach to it.` + note; return; }
-  el.style.color = '#8c8';
-  el.textContent = `room "${room}"${via}: tiles ${tileTags().join(', ') || '-'}` + note;
+  const stale = peerList().filter(p => p.role !== 'control' && p.build !== BUILD).map(p => p.tag || p.id);
+  el.style.color = stale.length ? '#f96' : '#8c8';
+  el.textContent = `room "${room}"${via}: tiles ${tileTags().join(', ') || '-'}` +
+    (stale.length ? `\nOLD CODE on ${stale.join(', ')}: their page predates this one, so newer controls won't reach them. Press reload displays.` : '') + note;
   panelLayout(false);
 }
 // ---- layout section: canvas aspect, presets, one tile dropdown per display --
@@ -922,7 +928,7 @@ let layoutSig = '';
 function panelLayout(force){
   if (!isControl) return;
   const L = activeLayout(), ds = displays();
-  const sig = JSON.stringify([L, ds.map(d => [d.tag, d.win])]);
+  const sig = JSON.stringify([L, ds.map(d => [d.tag, d.win, d.build])]);
   if (!force && sig === layoutSig) return;
   layoutSig = sig;
   if (document.activeElement !== $('lcanvas')) $('lcanvas').value = canvasStr();
@@ -933,7 +939,7 @@ function panelLayout(force){
   for (const d of ds) {
     const row = document.createElement('div'); row.className = 'drow';
     const name = document.createElement('span'); name.textContent = d.tag;
-    const size = document.createElement('span'); size.textContent = d.win ? `${d.win[0]}×${d.win[1]}` : '?';
+    const size = document.createElement('span'); size.textContent = d.build !== BUILD ? 'old code' : d.win ? `${d.win[0]}×${d.win[1]}` : '?';
     const sel = document.createElement('select');
     const opt = (v, t) => { const o = document.createElement('option'); o.value = v; o.textContent = t; sel.appendChild(o); };
     opt('', 'own URL tile'); opt(-1, 'whole canvas');
