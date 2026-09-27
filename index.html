@@ -2,6 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" href="data:,">
 <title>vj-show player</title>
 <style>
@@ -36,6 +37,18 @@
   #ident { position:fixed; inset:0; display:none; align-items:center; justify-content:center; flex-direction:column; pointer-events:none;
            background:rgba(0,0,0,.55); color:#fff; font:bold 15vh/1 system-ui, sans-serif; text-shadow:0 0 12px #000; }
   #ident small { font:3vh/1.4 monospace; margin-top:2vh; }
+  /* ?mode=remote: phone remote, just the playing scene's sliders, no monitors */
+  #rscene { display:none; }
+  body.remote canvas, body.remote #monlabels, body.remote #panel .bar, body.remote #panel h3,
+  body.remote #ldisplays, body.remote #panel > .row { display:none; }
+  body.remote #panel { padding:12px 16px 60px; }
+  body.remote #rscene { display:block; font:600 22px/1.2 system-ui, sans-serif; margin:6px 0 14px; color:#fff; }
+  body.remote #rscene small { display:block; font:13px monospace; color:#999; margin-top:4px; }
+  body.remote #pstatus { font-size:11px; margin-bottom:16px; }
+  body.remote #psliders .row { grid-template-columns: 1fr auto; grid-template-areas: "label val" "input input"; gap:2px 10px; margin:0 0 18px; }
+  body.remote #psliders .row label { grid-area:label; font-size:15px; }
+  body.remote #psliders .row .val { grid-area:val; font-size:15px; }
+  body.remote #psliders .row input { grid-area:input; height:40px; }
   #panel h3 { margin:14px 0 4px; font-size:13px; color:#999; text-transform:uppercase; letter-spacing:.05em; }
 </style>
 </head>
@@ -47,6 +60,7 @@
 <div id="ident"></div>
 <script src="vendor/peerjs.min.js"></script>
 <div id="panel">
+  <div id="rscene"></div>
   <div class="status" id="pstatus">connecting…</div>
   <div class="bar">
     <select id="pscene"></select>
@@ -121,9 +135,13 @@ const qs = new URLSearchParams(location.search);
 // This page's code version: a hash of this script. Sent in hello/state so the control page
 // can flag a display that hasn't reloaded since an update.
 const BUILD = (() => { let h = 2166136261; for (const ch of document.currentScript.textContent) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619); } return (h >>> 0).toString(36); })();
-const MODE = qs.get('mode') === 'control' ? 'control' : 'display';
+// ?mode=remote is a control page for a phone: the playing scene's sliders only, no monitors.
+// On the wire it is a control like any other.
+const REMOTE = qs.get('mode') === 'remote';
+const MODE = qs.get('mode') === 'control' || REMOTE ? 'control' : 'display';
 const isControl = MODE === 'control';
 if (isControl) document.body.classList.add('control');
+if (REMOTE) document.body.classList.add('remote');
 const canvas = document.getElementById('c');
 const statsEl = document.getElementById('stats');
 const errEl = document.getElementById('err');
@@ -903,6 +921,12 @@ const panel = { scene: null, building: false };
 const $ = id => document.getElementById(id);
 function panelStatus(){
   if (!isControl) return;
+  if (REMOTE) {
+    const sc = cur >= 0 && scenes[cur] ? scenes[cur].name : '…';
+    const small = nxt >= 0 && scenes[nxt] ? `fading to ${scenes[nxt].name}` : hold ? 'hold' : '';
+    $('rscene').innerHTML = ''; $('rscene').append(sc);
+    if (small) { const e = document.createElement('small'); e.textContent = small; $('rscene').append(e); }
+  }
   const el = $('pstatus');
   const editing = panelSceneName(), playing = cur >= 0 && scenes[cur] ? scenes[cur].name : null;
   const note = editing && editing !== playing ? `\npreviewing "${editing}"; displays are playing "${playing}" (press play now to switch)` : '';
@@ -955,7 +979,7 @@ function panelLayout(force){
   }
 }
 function panelSceneName(){
-  if ($('plock').checked && panel.scene && scenes.some(s => s.name === panel.scene)) return panel.scene;
+  if (!REMOTE && $('plock').checked && panel.scene && scenes.some(s => s.name === panel.scene)) return panel.scene;
   return cur >= 0 && scenes[cur] ? scenes[cur].name : null;
 }
 // ?range=N on the control URL: sliders run 0..N×value (−N×|v|..N×|v| for negatives). Default 2.
@@ -1095,7 +1119,7 @@ if (isControl) {
   try { await loadConfig(); }
   catch (e) { showErr('config: ' + e.message); }
   sceneStart = showNow();
-  requestAnimationFrame(frame);
+  if (!REMOTE) requestAnimationFrame(frame);             // the phone remote draws no monitors
   let pollFailed = false;
   setInterval(async () => {
     try { await loadConfig(); if (pollFailed) { pollFailed = false; clearErr(); } }

@@ -189,6 +189,10 @@ and any late joiner converges on the same value within a frame or two.
 - *hold* stops the autopilot on the scene that is playing; *play now* and *next scene*
   still work, and releasing it gives the current scene a full `duration`. It lives in the
   leader's state, so it survives a failover but not a reload of every display.
+- **Phone remote:** `?mode=remote` is a control page for a phone: the playing scene's name
+  and its sliders at thumb size, nothing else. It follows the show as scenes change and
+  renders nothing, so it's light on battery. Open it at the server's LAN address, e.g.
+  `http://192.168.0.101:8000/?mode=remote`, on the same network as the displays.
 - *stats* turns the fps/sync overlay on or off on every display (the `s` key still toggles
   one display locally). It lives in the leader's state like *hold*.
 - *reload displays* reloads every display in the room, the leader last; they re-form the
