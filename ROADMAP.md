@@ -188,6 +188,13 @@ Keep `scenes.json` as the one file, and keep it in git; its history is the recor
 the show evolved. No shader editor in the control page: editing stays in a text editor,
 the control page moves files and values.
 
+## 7e. One transport
+
+Control pages that can't reach the leader over WebRTC (phones, a multi-homed Mac) use a
+server relay; everything else is WebRTC. A TURN server on the LAN would give every browser
+a reachable relay candidate and let the `/relay` endpoints and the mic unlock go. See
+[docs/sync.md](docs/sync.md#unifying-on-webrtc-later).
+
 ## 8. Gallery hardening
 
 - Boot-to-show: systemd unit or autostart entry that runs `serve.sh` and `kiosk.sh` on

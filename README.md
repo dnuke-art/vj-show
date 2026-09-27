@@ -118,6 +118,9 @@ some rectangle of that canvas.
 
 ### Multi-display sync
 
+[docs/sync.md](docs/sync.md) is the full reference: election, ids, every message, the
+clock, failover, and the server relay for control pages.
+
     http://server:8000/?id=left&grid=2,1&tile=0,0
     http://server:8000/?id=right&grid=2,1&tile=1,0
 
