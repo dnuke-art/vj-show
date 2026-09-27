@@ -171,7 +171,7 @@ and any late joiner converges on the same value within a frame or two.
 
 - A control peer never becomes leader and never counts as a tile, whatever its id.
 - **Server relay.** A control page that can't open WebRTC to the leader talks to it through
-  `server.js` instead (server-sent events down, POST up); displays still sync with each
+  `server.js` instead, over a WebSocket at `/relay`; displays still sync with each
   other peer-to-peer. The phone remote always uses it, because phone browsers hide their
   LAN address from WebRTC. A full control page tries WebRTC first and switches after 8 s,
   which covers a Mac whose default route is Wi-Fi while the displays are on a wired LAN

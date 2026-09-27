@@ -9,6 +9,7 @@
 'use strict';
 const express = require('express');
 const { ExpressPeerServer } = require('peer');
+const { WebSocketServer } = require('ws');
 const fs = require('fs');
 const path = require('path');
 
@@ -36,45 +37,56 @@ app.post('/scenes', express.json({ limit: '1mb' }), (req, res) => {
 });
 
 // Control relay. A control page that can't open WebRTC to the leader (a phone browser that
-// hides its LAN address, a Mac whose default route is Wi-Fi) talks to it through here:
-// server-sent events down, POST up. Messages are opaque; the leader applies the same hello
-// and key checks it does for WebRTC. Displays still sync peer-to-peer.
-const relayRooms = new Map();   // room -> { leader: { id, res } | null, clients: Map<id, res> }
-function relayRoom(name){ if (!relayRooms.has(name)) relayRooms.set(name, { leader: null, clients: new Map() }); return relayRooms.get(name); }
-function sse(res, obj){ res.write(`data: ${JSON.stringify(obj)}\n\n`); }
-app.get('/relay/:room/listen', (req, res) => {
-  const R = relayRoom(req.params.room), id = String(req.query.id || ''), isLeader = req.query.role === 'leader';
-  if (!id) return res.sendStatus(400);
-  res.set({ 'Content-Type': 'text/event-stream', Connection: 'keep-alive' });
-  res.flushHeaders(); res.write(': ok\n\n');
-  const keepAlive = setInterval(() => res.write(': ka\n\n'), 15000);
-  if (isLeader) R.leader = { id, res }; else R.clients.set(id, res);
+// hides its LAN address, a Mac whose default route is Wi-Fi) talks to it through here over a
+// WebSocket at /relay?room=&id=[&role=leader]. Messages are opaque: a client sends
+// {to, msg} with to = "leader" or a client id, and receives {from, msg}, {from, gone} when
+// the other side's socket closes, or {missing: to} when nobody is there. The leader applies
+// the same hello and key checks it does for WebRTC. Displays still sync peer-to-peer.
+const relayRooms = new Map();   // room -> { leader: ws | null, clients: Map<id, ws> }
+const relayWss = new WebSocketServer({ noServer: true });
+relayWss.on('connection', (ws, req) => {
+  const q = new URL(req.url, 'http://x').searchParams;
+  const room = q.get('room') || '', id = q.get('id') || '', isLeader = q.get('role') === 'leader';
+  if (!room || !id) return ws.close(1008, 'room and id required');
+  if (!relayRooms.has(room)) relayRooms.set(room, { leader: null, clients: new Map() });
+  const R = relayRooms.get(room), send = (to, obj) => { if (to && to.readyState === 1) to.send(JSON.stringify(obj)); };
+  if (isLeader) R.leader = ws; else R.clients.set(id, ws);
   console.log(new Date().toISOString(), 'relay +', id, isLeader ? '(leader)' : '');
-  req.on('close', () => {
-    clearInterval(keepAlive);
+  ws.alive = true; ws.on('pong', () => { ws.alive = true; });
+  ws.on('message', data => {
+    let m; try { m = JSON.parse(data); } catch (e) { return; }
+    const target = m.to === 'leader' ? R.leader : R.clients.get(m.to);
+    if (target) send(target, { from: id, msg: m.msg });
+    else send(ws, { missing: m.to });
+  });
+  ws.on('close', () => {
     if (isLeader) {
-      if (R.leader && R.leader.res === res) { R.leader = null; for (const c of R.clients.values()) sse(c, { from: 'leader', gone: true }); }
-    } else if (R.clients.get(id) === res) {
-      R.clients.delete(id);
-      if (R.leader) sse(R.leader.res, { from: id, gone: true });
+      if (R.leader === ws) { R.leader = null; for (const c of R.clients.values()) send(c, { from: 'leader', gone: true }); }
+    } else if (R.clients.get(id) === ws) {
+      R.clients.delete(id); send(R.leader, { from: id, gone: true });
     }
     console.log(new Date().toISOString(), 'relay -', id);
   });
 });
-app.post('/relay/:room/send', express.json({ limit: '256kb' }), (req, res) => {
-  const R = relayRoom(req.params.room), { from, to, msg } = req.body || {};
-  const target = to === 'leader' ? R.leader && R.leader.res : R.clients.get(to);
-  if (!target || !from) return res.sendStatus(404);
-  sse(target, { from, msg });
-  res.sendStatus(204);
-});
+// drop sockets that stopped answering pings (a phone that went to sleep mid-show)
+setInterval(() => relayWss.clients.forEach(ws => { if (!ws.alive) return ws.terminate(); ws.alive = false; ws.ping(); }), 15000);
 
 app.use(express.static(ROOT, { etag: false, index: 'index.html' }));
 
 const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`vj-show: serving ${ROOT} on http://0.0.0.0:${PORT}  (PeerServer at /peerjs)`);
 });
-const peerServer = ExpressPeerServer(server, { path: '/', alive_timeout: 60000, expire_timeout: 5000 });
+// One upgrade handler for both WebSocket servers: a ws server attached with `server:` rejects
+// every path but its own, so PeerJS's would refuse /relay. Both run with noServer instead.
+let peerWss = null, peerWsPath = null;
+const peerServer = ExpressPeerServer(server, { path: '/', alive_timeout: 60000, expire_timeout: 5000,
+  createWebSocketServer: options => { peerWsPath = options.path; return (peerWss = new WebSocketServer({ noServer: true })); } });
+server.on('upgrade', (req, socket, head) => {
+  const path = req.url.split('?')[0];
+  const wss = path === '/relay' ? relayWss : peerWss && path === peerWsPath ? peerWss : null;
+  if (!wss) return socket.destroy();
+  wss.handleUpgrade(req, socket, head, ws => wss.emit('connection', ws, req));
+});
 peerServer.on('connection', c => console.log(new Date().toISOString(), 'peer +', c.getId()));
 peerServer.on('disconnect', c => console.log(new Date().toISOString(), 'peer -', c.getId()));
 app.use('/peerjs', peerServer);

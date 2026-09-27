@@ -25,6 +25,8 @@ const open = async (q, name) => { const p = await browser.newPage(); p.on('pagee
 try {
   const room = 'test' + Math.random().toString(36).slice(2, 6);
   const a = await open(`?sync=${room}&id=a&grid=2,1&tile=0,0`, 'a');
+  // a claims the room only after loading its scenes; opening b before that is a race b can win
+  await until(async () => (await state(a)).isLeader && (await state(a)).serverKind, 20000, 'a claims the room');
   const b = await open(`?sync=${room}&id=b&grid=2,1&tile=1,0`, 'b');
   const c = await open(`?sync=${room}&id=c&mode=control`, 'c');
 

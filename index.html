@@ -788,74 +788,85 @@ function dial(p){
   }, 8000);
 }
 // ---- server relay (server.js /relay) ------------------------------------------
-// A stand-in for a PeerJS DataConnection: send() POSTs through the server, the server's
-// event stream delivers the other direction. `to` is 'leader' or a relay client's id.
+// A WebSocket to the server that carries {to, msg} out and {from, msg} / {from, gone} /
+// {missing} in. relayConn() wraps one remote end as a stand-in for a PeerJS DataConnection
+// (send, close, on, peer), so the leader treats relay clients exactly like WebRTC ones.
 let relayOk = null, relayMode = false;            // server offers a relay; this control page is using it
 function relayAvailable(){
   if (relayOk !== null || serverKind !== 'local') return Promise.resolve(relayOk = !!relayOk && serverKind === 'local');
   return fetch('scenes', { cache:'no-store' }).then(r => r.ok ? r.json() : null).then(c => (relayOk = !!(c && c.relay))).catch(() => (relayOk = false));
 }
-function relayUrl(p){ return `relay/${encodeURIComponent(room)}/${p}`; }
-function relayConn(to, onMissing){
+// A WebSocket that reopens itself 2 s after it drops, until stop().
+function relaySocket(role, onOpen, onData){
+  const u = new URL('relay', location.href);
+  u.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  u.search = new URLSearchParams({ room, id: myId, ...(role ? { role } : {}) });
+  let ws = null, stopped = false, timer = null;
+  const open = () => {
+    ws = new WebSocket(u);
+    ws.onopen = () => onOpen && onOpen();
+    ws.onmessage = e => { let d; try { d = JSON.parse(e.data); } catch(_) { return; } onData(d); };
+    ws.onclose = () => { if (!stopped) timer = setTimeout(open, 2000); };
+  };
+  open();
+  return { send(to, msg){ if (ws && ws.readyState === 1) ws.send(JSON.stringify({ to, msg })); },
+           stop(){ stopped = true; clearTimeout(timer); if (ws) ws.close(); } };
+}
+function relayConn(sock, to){
   const h = {};
   const c = { peer: to, open: true,
-    send(m){ fetch(relayUrl('send'), { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify({ from: myId, to, msg: m }) })
-               .then(r => { if (r.status === 404 && onMissing) onMissing(); }).catch(() => {}); },
+    send(m){ sock.send(to, m); },
     close(){ if (!c.open) return; c.open = false; (h.close || []).forEach(f => f()); },
     on(ev, f){ (h[ev] = h[ev] || []).push(f); return c; },
     emit(ev, x){ (h[ev] || []).forEach(f => f(x)); } };
   return c;
 }
 // Leader: relay clients show up as followers, through the same onFollower as WebRTC ones.
-let relayLeaderEs = null;
+let relayLeaderSock = null;
 const relayConns = new Map();                      // relay client id -> relayConn
 function relayLeaderStart(){
   relayAvailable().then(ok => {
-    if (!ok || !isLeader() || relayLeaderEs) return;
-    const es = relayLeaderEs = new EventSource(relayUrl('listen') + '?role=leader&id=' + encodeURIComponent(myId));
-    es.onmessage = e => {
-      if (relayLeaderEs !== es) return;
-      let d; try { d = JSON.parse(e.data); } catch(_) { return; }
+    if (!ok || !isLeader() || relayLeaderSock) return;
+    const sock = relayLeaderSock = relaySocket('leader', null, d => {
+      if (relayLeaderSock !== sock) return;
+      if (d.missing) { const c = relayConns.get(d.missing); if (c) { relayConns.delete(d.missing); c.close(); } return; }
       let c = relayConns.get(d.from);
       if (d.gone) { if (c) { relayConns.delete(d.from); c.close(); } return; }
       if (!c) {
-        c = relayConn(d.from, () => c.close());
+        c = relayConn(sock, d.from);
         relayConns.set(d.from, c); c.on('close', () => relayConns.delete(d.from));
         onFollower(c);
       }
       c.emit('data', d.msg);
-    };
+    });
   });
 }
 function relayLeaderStop(){
-  if (relayLeaderEs) { relayLeaderEs.close(); relayLeaderEs = null; }
+  if (relayLeaderSock) { relayLeaderSock.stop(); relayLeaderSock = null; }
   for (const c of [...relayConns.values()]) c.close();
   relayConns.clear();
 }
-// Control: one event stream for the page's life; hello every 3 s until the leader answers.
-let relayEs = null, relayC = null, relayHelloTimer = null;
+// Control: one socket for the page's life; hello every 3 s until the leader answers.
+let relaySock = null, relayC = null, relayHelloTimer = null;
 function relayHello(){
-  relayC = relayC || relayConn('leader');
   const hi = () => relayC.send({ type: 'hello', role: MODE, tag: myTag, ua: UA, key: syncKey, win: winSize(), build: BUILD });
   clearInterval(relayHelloTimer); hi();
   relayHelloTimer = setInterval(() => { if (leaderConn === relayC) { clearInterval(relayHelloTimer); relayHelloTimer = null; } else hi(); }, 3000);
 }
 function relayDial(){
-  if (relayEs && relayEs.readyState !== 2) { relayHello(); return; }
-  const es = relayEs = new EventSource(relayUrl('listen') + '?id=' + encodeURIComponent(myId));
-  es.onopen = () => { if (relayEs === es) relayHello(); };
-  es.onmessage = e => {
-    if (relayEs !== es) return;
-    let d; try { d = JSON.parse(e.data); } catch(_) { return; }
+  if (relaySock) { relayHello(); return; }
+  relaySock = relaySocket(null, () => { if (leaderConn === relayC) { leaderConn = null; panelStatus(); } relayHello(); }, d => {
+    if (d.missing) return;                                         // no leader yet; hello keeps retrying
     if (d.gone) { if (leaderConn === relayC) { leaderConn = null; statePeers = []; panelStatus(); } relayHello(); return; }
-    if (!d.msg) return;
+    if (d.msg === undefined) return;
     if (leaderConn !== relayC) {
       leaderConn = relayC; leaderId = roomPeerId(); pingSamples = []; targetOffset = null; lastPong = now();
       console.log('[sync] following room', room, 'via the server relay');
       panelStatus();
     }
     handleData(leaderId, d.msg);
-  };
+  });
+  relayC = relayConn(relaySock, 'leader');
 }
 // Leader side: a follower connected. First message must be hello with the right key.
 function onFollower(conn){
@@ -984,7 +995,8 @@ function syncStart(){
   if (typeof Peer === 'undefined' || !window.RTCPeerConnection) { showErr('PeerJS/WebRTC not available; running unsynced'); return; }
   serverKind = resolveServerKind();
   console.log('[sync] room', room, 'as', myTag, MODE, 'via', serverKind, 'PeerServer; tile', TILE);
-  relayAvailable().then(connect);
+  if (isControl) relayAvailable().then(connect);        // a control's first choice depends on it
+  else connect();                                     // a display claims at once; as leader it probes later
   setInterval(() => {
     if (isLeader() || !leaderConn) return;
     if (now() - lastPong > 5) { console.warn('[sync] leader silent for 5 s; assuming it is gone'); const c = leaderConn; leaderConn = null; try { c.close(); } catch(e){} scheduleReconnect('leader silent'); return; }
@@ -1104,6 +1116,9 @@ function panelRebuild(){
       input.min = min; input.max = max; input.step = step; input.value = val;
       input.dataset.key = key; input.dataset.comp = i;
       const out = document.createElement('span'); out.className = 'val'; out.textContent = fmt(val);
+      // touch: on phones a range input isn't document.activeElement while dragged
+      input.addEventListener('pointerdown', () => { input.dataset.held = '1'; });
+      for (const ev of ['pointerup', 'pointercancel', 'touchend']) input.addEventListener(ev, () => { input.dataset.held = ''; input.dataset.touched = performance.now(); });
       input.addEventListener('input', () => {
         const n = +input.value; out.textContent = fmt(n); input.dataset.touched = performance.now();
         const curVal = effParams(scene)[key];
@@ -1126,7 +1141,7 @@ function panelUpdate(){
   if (!scene) return;
   const params = effParams(scene);
   for (const input of $('psliders').querySelectorAll('input[type=range]')) {
-    if (input === document.activeElement || performance.now() - (+input.dataset.touched || 0) < 400) continue;
+    if (input === document.activeElement || input.dataset.held || performance.now() - (+input.dataset.touched || 0) < 1000) continue;
     const v = params[input.dataset.key]; if (v === undefined) continue;
     const n = Array.isArray(v) ? v[+input.dataset.comp] : v;
     if (+input.value !== n) { input.value = n; input.nextElementSibling.textContent = fmt(n); }

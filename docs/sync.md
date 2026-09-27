@@ -22,7 +22,7 @@ and control pages send requests to the leader and display what it broadcasts.
 | `index.html` | every window | the player; also the control page (`?mode=control`) and phone remote (`?mode=remote`) |
 | PeerServer | `server.js` at `/peerjs`, or public `0.peerjs.com` | signaling only: hands out ids, relays WebRTC offers/answers. Never sees show data. |
 | WebRTC data channels | peer to peer | all show traffic between displays, and between control pages and the leader when possible |
-| Server relay | `server.js` at `/relay` | control traffic for control pages that can't open WebRTC to the leader |
+| Server relay | `server.js`, WebSocket at `/relay` | control traffic for control pages that can't open WebRTC to the leader |
 | `scenes.json` polling | every window, every 5 s | scenes, params, canvas, saved layout, and `reloadToken`. Independent of sync. |
 
 What needs the server and what doesn't:
@@ -202,11 +202,14 @@ Why paths 2 and 3 exist:
 
 ### Relay protocol
 
-Two endpoints on `server.js`, per room:
+One WebSocket endpoint on `server.js`, on the same port as the PeerServer:
 
 ```
-GET  /relay/<room>/listen?id=<id>[&role=leader]   server-sent events: { from, msg } or { from, gone: true }
-POST /relay/<room>/send   { from, to, msg }        to = "leader" or a client id; 404 if nobody is there
+ws://<server>/relay?room=<room>&id=<id>[&role=leader]
+  send     { to: "leader" | <client id>, msg }
+  receive  { from, msg }          a message
+           { from, gone: true }   the other side's socket closed
+           { missing: to }        nobody is there (no leader yet, or the client left)
 ```
 
 ```mermaid
@@ -214,19 +217,19 @@ sequenceDiagram
   participant L as leader display
   participant S as server.js relay
   participant R as phone remote
-  L->>S: GET listen?role=leader&id=vjshow-show   (after claiming the room)
-  R->>S: GET listen?id=ctl-x-ab12
+  L->>S: open ws /relay?role=leader&id=vjshow-show   (after claiming the room)
+  R->>S: open ws /relay?id=ctl-x-ab12
   loop every 3 s until the leader answers
-    R->>S: POST send {to: leader, msg: hello}
-    S-->>L: event {from: ctl-x-ab12, msg: hello}
+    R->>S: {to: leader, msg: hello}
+    S-->>L: {from: ctl-x-ab12, msg: hello}
   end
-  L->>S: POST send {to: ctl-x-ab12, msg: state}
-  S-->>R: event {from: vjshow-show, msg: state}
-  R->>S: POST send {to: leader, msg: setParam}
-  S-->>L: event {msg: setParam}
-  Note over L: broadcasts state to displays (WebRTC)<br/>and relay clients (POST)
+  L->>S: {to: ctl-x-ab12, msg: state}
+  S-->>R: {from: vjshow-show, msg: state}
+  R->>S: {to: leader, msg: setParam}
+  S-->>L: {from: ctl-x-ab12, msg: setParam}
+  Note over L: broadcasts state to displays (WebRTC)<br/>and to relay clients (WebSocket)
   Note over L: leader closes
-  S-->>R: event {from: leader, gone: true}
+  S-->>R: {from: leader, gone: true}
   Note over R: re-hello every 3 s until the new leader answers
 ```
 
@@ -234,11 +237,24 @@ sequenceDiagram
   PeerJS `DataConnection` (`send`, `close`, `on('data'|'close')`, `peer`) and handed to the
   same `onFollower` as a WebRTC connection. So key checks, `peers`, pings and liveness are
   all identical: the leader doesn't care how a follower arrived.
-- The server treats messages as opaque. It only routes by `to` and tells each side when
-  the other's event stream closes (`gone`).
+- The server treats messages as opaque. It only routes by `to`, and says when the other
+  side's socket closes (`gone`). It pings every socket every 15 s and drops ones that
+  stop answering, such as a phone that went to sleep.
+- Both ends reopen their socket 2 s after it drops.
 - The relay carries control traffic only. Displays never use it, so display sync stays
   peer-to-peer and survives the server going away. A control page on the relay loses the
   show while the server is down; nothing on screen does.
+- The PeerServer and the relay share one HTTP server. A `ws` server attached with
+  `server:` rejects every upgrade whose path isn't its own, so PeerJS's would refuse
+  `/relay`. Both therefore run with `noServer`, and one `upgrade` handler routes by path
+  (PeerJS's `createWebSocketServer` option makes that possible).
+
+**History.** The first relay (same day) was server-sent events down plus one POST per
+message up. It worked, but the phone's slider was jerky: parallel POSTs over several HTTP
+connections arrive bunched up or out of order. Serialising the POSTs made the updates
+ordered but coarse (one update per round trip). A WebSocket is one ordered, full-duplex
+connection with no per-message request, and measures the same as WebRTC: in a 60-step
+drag with 30 ms of added latency, every value arrives in order, at most ~22 ms apart.
 
 ## Things that aren't sync but look like it
 
