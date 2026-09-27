@@ -55,7 +55,9 @@ over a twelve-hour run.
   upscales. Half resolution is the baseline for old GPUs.
 - Polls `scenes.json` and every scene source every `reloadInterval` seconds. If anything
   changed it recompiles just that scene and keeps playing. The scene on screen survives
-  the reload if it still exists.
+  the reload if it still exists. A scene that fails to compile leaves everything as it
+  was and shows the error on every display until the file is fixed; test new shaders on
+  one window first.
 - Watchdog: reloads the page on WebGL context loss or an uncaught error, with backoff if
   it starts reload-looping.
 - Stats overlay (`s` key or `?stats=1`): fps, resolution, scene, uptime, JS heap, sync

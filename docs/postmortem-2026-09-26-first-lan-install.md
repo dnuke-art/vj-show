@@ -103,7 +103,7 @@ is made once at page load.
 
   The token in `sessionStorage` stops a reload loop. One catch cost a few minutes: the
   player only re-checks scene sources when `scenes.json` itself has changed, so I also had
-  to touch `scenes.json`.
+  to touch `scenes.json`. (Fixed the next day: every poll now re-reads every source.)
 
 **Lesson.** A silent fallback is fine when both options work. When one of them can't
 work in the place you're deploying, the fallback turns a clear error into a quiet wrong

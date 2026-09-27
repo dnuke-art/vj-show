@@ -321,10 +321,16 @@ async function fetchText(url){
 }
 
 let bootToken;                                 // scenes.json reloadToken as of page load
+let configCfg = null;                          // parsed scenes.json as of the last successful load
+let moduleLoads = 0;                           // cache-buster: each changed module gets a fresh URL
+// Every poll re-reads scenes.json and every scene source. Nothing is rebuilt unless one of
+// them changed; then only the changed scenes recompile and the one on screen keeps playing.
 async function loadConfig(){
   const text = await fetchText('scenes.json');
-  if (text === configText) return false;
-  const cfg = JSON.parse(text);
+  const cfg = text === configText ? configCfg : JSON.parse(text);
+  const srcs = new Map();
+  for (const s of cfg.scenes || []) { const key = s.module || s.shader; if (!srcs.has(key)) srcs.set(key, await fetchText(key)); }
+  if (text === configText && [...srcs].every(([key, src]) => programs.has(key) && programs.get(key).src === src)) return false;
   // "reloadToken": change it in scenes.json and every display reloads, synced or not
   const token = cfg.reloadToken === undefined ? null : cfg.reloadToken;
   if (bootToken === undefined) bootToken = token;
@@ -332,11 +338,11 @@ async function loadConfig(){
   const list = [];
   for (const s of cfg.scenes || []) {
     const key = s.module || s.shader;
-    const src = await fetchText(key);
+    const src = srcs.get(key);
     const have = programs.get(key);
     if (s.module) {
       if (!have || have.src !== src) {
-        const mod = await import(new URL(key, location.href).href + '?v=' + hashStr(src) + '-' + src.length);
+        const mod = await import(new URL(key, location.href).href + '?v=' + Date.now().toString(36) + '-' + (++moduleLoads));
         const inst = mod.default(gl, sceneApi);
         if (have) disposeEntry(have);
         programs.set(key, { src, kind:'module', inst, name: key });
@@ -367,7 +373,7 @@ async function loadConfig(){
   }
   const prevName = cur >= 0 && scenes[cur] ? scenes[cur].name : null;
   const nextName = nxt >= 0 && scenes[nxt] ? scenes[nxt].name : null;
-  configText = text;
+  configText = text; configCfg = cfg;
   config = { crossfade: +cfg.crossfade || 3, renderScale: +cfg.renderScale || 1,
              reloadInterval: +cfg.reloadInterval || 5, scenes: cfg.scenes, sync: cfg.sync || {},
              canvas: cfg.canvas || '16:9', fit: cfg.fit, layout: cfg.layout || null };
