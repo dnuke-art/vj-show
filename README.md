@@ -167,11 +167,15 @@ value to the leader, which folds it into the state it already broadcasts, so eve
 and any late joiner converges on the same value within a frame or two.
 
 - A control peer never becomes leader and never counts as a tile, whatever its id.
-- Controller on a machine whose internet is Wi-Fi but whose displays are on a wired LAN:
-  Chrome only offers WebRTC candidates on the default-route interface, so it can't reach
-  the leader. Open the panel at `http://localhost:8000/?mode=control`; after a failed
-  attempt it asks for mic permission once (never recorded), which makes Chrome offer every
-  interface. Devices whose default route is the display LAN don't need this.
+- **Server relay.** A control page that can't open WebRTC to the leader talks to it through
+  `server.js` instead (server-sent events down, POST up); displays still sync with each
+  other peer-to-peer. The phone remote always uses it, because phone browsers hide their
+  LAN address from WebRTC. A full control page tries WebRTC first and switches after 8 s,
+  which covers a Mac whose default route is Wi-Fi while the displays are on a wired LAN
+  (Chrome only offers WebRTC candidates on the default-route interface). The status line
+  says `via server relay` when it's in use. On a static host there is no relay, and a
+  control page on `localhost` falls back to asking for mic permission once (never
+  recorded), which makes Chrome offer every interface.
 - The panel and its preview follow whichever scene is playing unless you tick *lock
   scene* or pick one from the dropdown. Picking a scene previews it locally while the
   displays keep playing the show; *play now* fades the show to it. *next scene* skips.
@@ -244,7 +248,8 @@ it restarts.
 The server logs every PeerServer join and leave. `peer + vjshow-show` is the leader (the
 room id), `d-<id>-xxxx` is another display and `ctl-<id>-xxxx` a control page, where `<id>`
 is the window's `?id=`. A control page waiting for a display keeps one id; it doesn't
-re-register on every retry.
+re-register on every retry. `relay +`/`relay -` lines are the leader and control pages
+joining and leaving the server relay.
 
 Keys: `s` stats, `n` skip to next scene (forwarded to the leader when synced), `f`
 fullscreen. Edit `scenes.json` or anything in `scenes/` while it runs. Displays only

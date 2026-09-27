@@ -680,10 +680,19 @@ function newPeer(id){
 // ---- connect / claim / follow ---------------------------------------------
 function teardown(){
   if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+  relayLeaderStop();
   if (peer) { const p = peer; peer = null; try { p.destroy(); } catch(e){} }
   leaderConn = null; followers.clear();
 }
 function connect(){
+  // a controller the server relays for (the phone remote always; a full control page once
+  // WebRTC to the leader has timed out) skips PeerJS entirely
+  if (isControl && !rejected && room && relayOk && (REMOTE || relayMode)) {
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+    if (peer) { const p = peer; peer = null; try { p.destroy(); } catch(e){} }
+    if (myId === myTag) myId = anonId();
+    relayDial(); return;
+  }
   // a controller keeps its PeerServer registration across retries and just dials the room
   // again, so a control page waiting for a display is one id in the server log, not a new
   // one every few seconds. Displays re-register: they must try to claim the room first.
@@ -715,6 +724,7 @@ function claim(){
     myId = id; leaderId = id; leaderConn = null; pingSamples = []; targetOffset = null;
     console.log('[sync] leading room', room, 'via', serverKind, 'PeerServer');
     p.on('connection', onFollower);
+    relayLeaderStart();
     panelStatus(); syncBroadcastState();
   });
   p.on('error', e => {
@@ -770,7 +780,82 @@ function dial(p){
   conn.on('data', m => handleData(leaderId, m));
   conn.on('close', () => { if (leaderConn === conn) { leaderConn = null; if (!isLeader()) statePeers = []; } if (live()) scheduleReconnect('leader gone'); });
   conn.on('error', e => console.warn('[sync] channel error', e.type || '', e.message || e));
-  setTimeout(() => { if (!opened && live()) { unlockInterfaces(); scheduleReconnect('connect timed out'); } }, 8000);
+  setTimeout(() => {
+    if (opened || !live()) return;
+    if (isControl && relayOk) { relayMode = true; console.log('[sync] no WebRTC to the leader; using the server relay'); }
+    else unlockInterfaces();
+    scheduleReconnect('connect timed out');
+  }, 8000);
+}
+// ---- server relay (server.js /relay) ------------------------------------------
+// A stand-in for a PeerJS DataConnection: send() POSTs through the server, the server's
+// event stream delivers the other direction. `to` is 'leader' or a relay client's id.
+let relayOk = null, relayMode = false;            // server offers a relay; this control page is using it
+function relayAvailable(){
+  if (relayOk !== null || serverKind !== 'local') return Promise.resolve(relayOk = !!relayOk && serverKind === 'local');
+  return fetch('scenes', { cache:'no-store' }).then(r => r.ok ? r.json() : null).then(c => (relayOk = !!(c && c.relay))).catch(() => (relayOk = false));
+}
+function relayUrl(p){ return `relay/${encodeURIComponent(room)}/${p}`; }
+function relayConn(to, onMissing){
+  const h = {};
+  const c = { peer: to, open: true,
+    send(m){ fetch(relayUrl('send'), { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify({ from: myId, to, msg: m }) })
+               .then(r => { if (r.status === 404 && onMissing) onMissing(); }).catch(() => {}); },
+    close(){ if (!c.open) return; c.open = false; (h.close || []).forEach(f => f()); },
+    on(ev, f){ (h[ev] = h[ev] || []).push(f); return c; },
+    emit(ev, x){ (h[ev] || []).forEach(f => f(x)); } };
+  return c;
+}
+// Leader: relay clients show up as followers, through the same onFollower as WebRTC ones.
+let relayLeaderEs = null;
+const relayConns = new Map();                      // relay client id -> relayConn
+function relayLeaderStart(){
+  relayAvailable().then(ok => {
+    if (!ok || !isLeader() || relayLeaderEs) return;
+    const es = relayLeaderEs = new EventSource(relayUrl('listen') + '?role=leader&id=' + encodeURIComponent(myId));
+    es.onmessage = e => {
+      if (relayLeaderEs !== es) return;
+      let d; try { d = JSON.parse(e.data); } catch(_) { return; }
+      let c = relayConns.get(d.from);
+      if (d.gone) { if (c) { relayConns.delete(d.from); c.close(); } return; }
+      if (!c) {
+        c = relayConn(d.from, () => c.close());
+        relayConns.set(d.from, c); c.on('close', () => relayConns.delete(d.from));
+        onFollower(c);
+      }
+      c.emit('data', d.msg);
+    };
+  });
+}
+function relayLeaderStop(){
+  if (relayLeaderEs) { relayLeaderEs.close(); relayLeaderEs = null; }
+  for (const c of [...relayConns.values()]) c.close();
+  relayConns.clear();
+}
+// Control: one event stream for the page's life; hello every 3 s until the leader answers.
+let relayEs = null, relayC = null, relayHelloTimer = null;
+function relayHello(){
+  relayC = relayC || relayConn('leader');
+  const hi = () => relayC.send({ type: 'hello', role: MODE, tag: myTag, ua: UA, key: syncKey, win: winSize(), build: BUILD });
+  clearInterval(relayHelloTimer); hi();
+  relayHelloTimer = setInterval(() => { if (leaderConn === relayC) { clearInterval(relayHelloTimer); relayHelloTimer = null; } else hi(); }, 3000);
+}
+function relayDial(){
+  if (relayEs && relayEs.readyState !== 2) { relayHello(); return; }
+  const es = relayEs = new EventSource(relayUrl('listen') + '?id=' + encodeURIComponent(myId));
+  es.onopen = () => { if (relayEs === es) relayHello(); };
+  es.onmessage = e => {
+    if (relayEs !== es) return;
+    let d; try { d = JSON.parse(e.data); } catch(_) { return; }
+    if (d.gone) { if (leaderConn === relayC) { leaderConn = null; statePeers = []; panelStatus(); } relayHello(); return; }
+    if (!d.msg) return;
+    if (leaderConn !== relayC) {
+      leaderConn = relayC; leaderId = roomPeerId(); pingSamples = []; targetOffset = null; lastPong = now();
+      console.log('[sync] following room', room, 'via the server relay');
+      panelStatus();
+    }
+    handleData(leaderId, d.msg);
+  };
 }
 // Leader side: a follower connected. First message must be hello with the right key.
 function onFollower(conn){
@@ -899,7 +984,7 @@ function syncStart(){
   if (typeof Peer === 'undefined' || !window.RTCPeerConnection) { showErr('PeerJS/WebRTC not available; running unsynced'); return; }
   serverKind = resolveServerKind();
   console.log('[sync] room', room, 'as', myTag, MODE, 'via', serverKind, 'PeerServer; tile', TILE);
-  connect();
+  relayAvailable().then(connect);
   setInterval(() => {
     if (isLeader() || !leaderConn) return;
     if (now() - lastPong > 5) { console.warn('[sync] leader silent for 5 s; assuming it is gone'); const c = leaderConn; leaderConn = null; try { c.close(); } catch(e){} scheduleReconnect('leader silent'); return; }
@@ -931,7 +1016,7 @@ function panelStatus(){
   const editing = panelSceneName(), playing = cur >= 0 && scenes[cur] ? scenes[cur].name : null;
   const note = editing && editing !== playing ? `\npreviewing "${editing}"; displays are playing "${playing}" (press play now to switch)` : '';
   $('pplay').disabled = !editing || editing === playing;
-  const via = serverKind ? ` via ${serverKind} PeerServer` : '';
+  const via = leaderConn && leaderConn === relayC ? ' via server relay' : serverKind ? ` via ${serverKind} PeerServer` : '';
   if (rejected) { el.style.color = '#f66'; el.textContent = `REJECTED by room "${room}": wrong key. Set sync.key in scenes.json or ?key= on this URL.` + note; return; }
   if (!room) { el.style.color = '#f96'; el.textContent = 'NO ROOM: running standalone, nothing else is controlled.\nAdd ?sync=<room> to this URL, or "sync": {"room": "show"} to scenes.json.' + note; return; }
   if (isLeader()) { el.style.color = '#f96'; el.textContent = `NO DISPLAY in room "${room}"${via}: running standalone, nothing else is controlled.\nOpen a display in the same room; this page will attach to it.` + note; return; }

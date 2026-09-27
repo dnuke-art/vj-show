@@ -23,7 +23,7 @@ app.use((req, res, next) => {
 });
 
 // capability probe: the control page enables "save" only if this answers
-app.get('/scenes', (req, res) => res.json({ save: true }));
+app.get('/scenes', (req, res) => res.json({ save: true, relay: true }));
 
 // control panel "save": write scenes.json atomically; displays hot-reload it
 app.post('/scenes', express.json({ limit: '1mb' }), (req, res) => {
@@ -33,6 +33,40 @@ app.post('/scenes', express.json({ limit: '1mb' }), (req, res) => {
   fs.writeFileSync(tmp, JSON.stringify(body, null, 2) + '\n');
   fs.renameSync(tmp, path.join(ROOT, 'scenes.json'));
   res.json({ ok: true });
+});
+
+// Control relay. A control page that can't open WebRTC to the leader (a phone browser that
+// hides its LAN address, a Mac whose default route is Wi-Fi) talks to it through here:
+// server-sent events down, POST up. Messages are opaque; the leader applies the same hello
+// and key checks it does for WebRTC. Displays still sync peer-to-peer.
+const relayRooms = new Map();   // room -> { leader: { id, res } | null, clients: Map<id, res> }
+function relayRoom(name){ if (!relayRooms.has(name)) relayRooms.set(name, { leader: null, clients: new Map() }); return relayRooms.get(name); }
+function sse(res, obj){ res.write(`data: ${JSON.stringify(obj)}\n\n`); }
+app.get('/relay/:room/listen', (req, res) => {
+  const R = relayRoom(req.params.room), id = String(req.query.id || ''), isLeader = req.query.role === 'leader';
+  if (!id) return res.sendStatus(400);
+  res.set({ 'Content-Type': 'text/event-stream', Connection: 'keep-alive' });
+  res.flushHeaders(); res.write(': ok\n\n');
+  const keepAlive = setInterval(() => res.write(': ka\n\n'), 15000);
+  if (isLeader) R.leader = { id, res }; else R.clients.set(id, res);
+  console.log(new Date().toISOString(), 'relay +', id, isLeader ? '(leader)' : '');
+  req.on('close', () => {
+    clearInterval(keepAlive);
+    if (isLeader) {
+      if (R.leader && R.leader.res === res) { R.leader = null; for (const c of R.clients.values()) sse(c, { from: 'leader', gone: true }); }
+    } else if (R.clients.get(id) === res) {
+      R.clients.delete(id);
+      if (R.leader) sse(R.leader.res, { from: id, gone: true });
+    }
+    console.log(new Date().toISOString(), 'relay -', id);
+  });
+});
+app.post('/relay/:room/send', express.json({ limit: '256kb' }), (req, res) => {
+  const R = relayRoom(req.params.room), { from, to, msg } = req.body || {};
+  const target = to === 'leader' ? R.leader && R.leader.res : R.clients.get(to);
+  if (!target || !from) return res.sendStatus(404);
+  sse(target, { from, msg });
+  res.sendStatus(204);
 });
 
 app.use(express.static(ROOT, { etag: false, index: 'index.html' }));
