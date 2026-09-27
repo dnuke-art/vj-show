@@ -335,7 +335,8 @@ async function loadConfig(){
   const text = await fetchText('scenes.json');
   // private/scenes.json (gitignored) adds scenes to the show; they are never written back by save
   const caps = await serverCaps();
-  const priv = caps && caps.private ? await fetchText('private/scenes.json').catch(() => '') : '';
+  // an older server.js doesn't say (undefined): look anyway; only an explicit false skips it
+  const priv = caps && caps.private !== false ? await fetchText('private/scenes.json').catch(() => '') : '';
   const same = text === configText && priv === privateText;
   const cfg = same ? configCfg : JSON.parse(text);
   if (!same && priv) cfg.scenes = [...(cfg.scenes || []), ...(JSON.parse(priv).scenes || []).map(s => Object.assign({}, s, { private: true }))];
