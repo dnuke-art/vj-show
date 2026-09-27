@@ -194,6 +194,17 @@ and any late joiner converges on the same value within a frame or two.
   `"reloadToken"` in `scenes.json`: every display reloads on its next poll. Neither can
   make a window fullscreen (browsers need a gesture), so start display browsers in kiosk
   mode, e.g. `msedge --kiosk <url> --edge-kiosk-type=fullscreen --no-first-run`.
+- *layout* maps the canvas onto the displays in the room without touching their URLs.
+  *same image on all* sets the canvas to the displays' own shape and gives each one the
+  whole canvas; *span across* with `4x1`, `2x2` etc. sets the canvas to that many
+  display-shaped tiles and assigns them in tag order. Each display then gets a dropdown
+  to move it to another tile, and *identify* puts every display's tag on its screen for
+  5 s so you can tell which is which. The *canvas* field changes just the aspect
+  (`9:16`, `36:16`, `1:1`) and leaves tiles alone. The layout lives in the leader's
+  state, overrides `?canvas=` and `?tile=`, and *save* writes it to `scenes.json`
+  `"layout"` so it applies at the next start; *clear layout* goes back to the URLs and
+  `scenes.json`. It's keyed by display tag, so give kiosks a stable `&id=left` etc.
+  (a display without `?id=` keeps its random tag only until its window closes).
 - Saved overrides stay in the leader's memory after a save. If you later hand-edit the
   same key in `scenes.json`, press *reset overrides* or restart the leader so the file
   value shows through.
@@ -220,6 +231,7 @@ it restarts.
     ./serve.sh          # http://<this host>:8000: files + PeerServer at /peerjs + save (needs Node)
     ./kiosk.sh          # fullscreen Chromium on the display machine
     npm test            # headless three-window sync test against a running server on :8765
+    node test/layout.test.mjs   # control-page layout: span, mirror, per-display tile, identify
 
 Keys: `s` stats, `n` skip to next scene (forwarded to the leader when synced), `f`
 fullscreen. Edit `scenes.json` or anything in `scenes/` while it runs. Displays only

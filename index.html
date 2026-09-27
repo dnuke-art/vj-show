@@ -31,6 +31,11 @@
   #panel button.done { background:#2e7d4f; border-color:#3fa76a; color:#fff; }
   #panel button:disabled { opacity:.4; cursor:default; }
   #panel .status { font-family:monospace; font-size:12px; color:#8c8; white-space:pre-wrap; }
+  #panel input[type=text] { font:14px monospace; padding:6px 8px; width:6em; background:#222; color:#ddd; border:1px solid #444; border-radius:4px; }
+  #ldisplays .drow { display:grid; grid-template-columns: 8em 7em 1fr; gap:10px; align-items:center; margin:4px 0; font:13px monospace; }
+  #ident { position:fixed; inset:0; display:none; align-items:center; justify-content:center; flex-direction:column; pointer-events:none;
+           background:rgba(0,0,0,.55); color:#fff; font:bold 15vh/1 system-ui, sans-serif; text-shadow:0 0 12px #000; }
+  #ident small { font:3vh/1.4 monospace; margin-top:2vh; }
   #panel h3 { margin:14px 0 4px; font-size:13px; color:#999; text-transform:uppercase; letter-spacing:.05em; }
 </style>
 </head>
@@ -39,6 +44,7 @@
 <div id="monlabels"><span>PVW · preview (what the panel edits)</span><span>PGM · program (what the displays show)</span></div>
 <div id="stats"></div>
 <div id="err"></div>
+<div id="ident"></div>
 <script src="vendor/peerjs.min.js"></script>
 <div id="panel">
   <div class="status" id="pstatus">connecting…</div>
@@ -52,6 +58,17 @@
     <button id="psave">save to scenes.json</button>
     <button id="preload">reload displays</button>
   </div>
+  <h3>layout</h3>
+  <div class="bar">
+    <label>canvas <input type="text" id="lcanvas" placeholder="9:16" title="width:height of the whole canvas; enter to apply"></label>
+    <button id="lmirror">same image on all</button>
+    <select id="lgrid"><option>2x1</option><option>3x1</option><option selected>4x1</option><option>2x2</option><option>1x2</option><option>1x4</option></select>
+    <button id="lspan">span across</button>
+    <button id="lident">identify</button>
+    <button id="lclear">clear layout</button>
+  </div>
+  <div id="ldisplays"></div>
+  <h3>params</h3>
   <div id="psliders"></div>
 </div>
 <script>
@@ -201,9 +218,24 @@ if (tileQ.length === 4) TILE = { x: tileQ[0], y: tileQ[1], w: tileQ[2], h: tileQ
 else { const c = Math.min(COLS - 1, tileQ[0] | 0), r = Math.min(ROWS - 1, tileQ[1] | 0);
        TILE = { x: c / COLS, y: r / ROWS, w: 1 / COLS, h: 1 / ROWS }; }
 if (isControl) TILE = { x: 0, y: 0, w: 1, h: 1 };                     // the preview shows the whole canvas
+const URL_TILE = TILE;
+// Layout, set live from the control page: { canvas, cols, rows, tiles: { <display tag>: cell } },
+// cell = col + row*cols, -1 = the whole canvas. The leader owns it and sends it in state;
+// "save" writes it to scenes.json "layout", which applies when no live layout is set.
+// A display whose tag isn't in tiles keeps its URL tile.
+let layout = null;
+function activeLayout(){ return layout || config.layout || null; }
+function layoutTile(){
+  const L = activeLayout();
+  if (isControl || !L || !L.tiles || !(myTag in L.tiles)) return URL_TILE;
+  const cols = Math.max(1, L.cols | 0), rows = Math.max(1, L.rows | 0), i = L.tiles[myTag] | 0;
+  if (i < 0 || i >= cols * rows) return { x: 0, y: 0, w: 1, h: 1 };
+  return { x: (i % cols) / cols, y: Math.floor(i / cols) / rows, w: 1 / cols, h: 1 / rows };
+}
 const FIT_Q = qs.get('fit'), CANVAS_Q = qs.get('canvas');
+function canvasStr(){ const L = activeLayout(); return String((L && L.canvas) || CANVAS_Q || config.canvas || '16:9'); }
 function canvasAspect(){
-  const c = String(CANVAS_Q || config.canvas || '16:9'), m = c.split(/[:x\/]/).map(Number);
+  const c = canvasStr(), m = c.split(/[:x\/]/).map(Number);
   return m.length >= 2 && m[1] ? m[0] / m[1] : (+c || 16 / 9);
 }
 function fitMode(){ const f = FIT_Q || config.fit || 'contain'; return ['contain', 'cover', 'fill'].includes(f) ? f : 'contain'; }
@@ -309,7 +341,7 @@ async function loadConfig(){
   configText = text;
   config = { crossfade: +cfg.crossfade || 3, renderScale: +cfg.renderScale || 1,
              reloadInterval: +cfg.reloadInterval || 5, scenes: cfg.scenes, sync: cfg.sync || {},
-             canvas: cfg.canvas || '16:9', fit: cfg.fit };
+             canvas: cfg.canvas || '16:9', fit: cfg.fit, layout: cfg.layout || null };
   scenes = list;
   if (!scenes.length) throw new Error('scenes.json has no scenes');
   const keep = prevName !== null ? scenes.findIndex(s => s.name === prevName) : -1;
@@ -328,6 +360,7 @@ function hashStr(s){ let h = 2166136261; for (const c of s) { h ^= c.charCodeAt(
 
 // ---- sizing ---------------------------------------------------------------
 function resize(force){
+  TILE = layoutTile();
   const A = canvasAspect(), fit = fitMode();
   let w = Math.floor(window.innerWidth), h = Math.floor(window.innerHeight), mon = 0;
   if (isControl) {                                     // two monitors (PGM | PVW) at the show's aspect, ≤ 30% of height
@@ -361,7 +394,12 @@ function resize(force){
     renderW = rw; renderH = rh;
   }
 }
-window.addEventListener('resize', () => resize(false));
+let winTimer = null;
+window.addEventListener('resize', () => {
+  resize(false);
+  if (!winTimer) winTimer = setTimeout(() => { winTimer = null; if (!isLeader() && leaderConn) syncSend(leaderId, { type:'geo', win: winSize() }); }, 250);
+});
+function winSize(){ return isControl ? null : [window.innerWidth, window.innerHeight]; }
 
 // ---- rendering ------------------------------------------------------------
 function drawScene(scene, target, t){
@@ -472,7 +510,7 @@ function frame(){
     if (showStats) {
       const mem = performance.memory ? (performance.memory.usedJSHeapSize / 1048576).toFixed(1) + ' MB heap' : '';
       statsEl.textContent =
-        `fps ${fps.toFixed(1)}  ${canvas.width}x${canvas.height} -> ${renderW}x${renderH}  canvas ${config.canvas} ${fitMode()}  tile ${[TILE.x, TILE.y, TILE.w, TILE.h].map(v => +v.toFixed(3)).join(',')}\n` +
+        `fps ${fps.toFixed(1)}  ${canvas.width}x${canvas.height} -> ${renderW}x${renderH}  canvas ${canvasStr()} ${fitMode()}  tile ${[TILE.x, TILE.y, TILE.w, TILE.h].map(v => +v.toFixed(3)).join(',')}\n` +
         `scene ${scene.name} ${elapsed.toFixed(0)}/${scene.duration}s${hold ? ' HOLD' : ''}` + (nxt >= 0 ? ` -> ${scenes[nxt].name} ${(mixAmt*100).toFixed(0)}%` : '') + `\n` +
         `uptime ${((ln - bootT)/60).toFixed(1)} min  ${mem}\n` + syncStatsLine();
     }
@@ -501,6 +539,23 @@ function setHold(on){
   if (hold && !on && nxt < 0) sceneStart = showNow();   // released: the current scene gets a full duration
   hold = on; syncBroadcastState(); panelUpdate();
 }
+function setLayout(L){
+  L = L && typeof L === 'object' ? { canvas: String(L.canvas || ''), cols: Math.max(1, L.cols | 0), rows: Math.max(1, L.rows | 0), tiles: Object.assign({}, L.tiles) } : null;
+  if (L && !L.canvas) delete L.canvas;
+  layout = L; resize(true); panelLayout(true);                     // local echo; the leader's state confirms
+  if (isLeader()) syncBroadcastState(); else if (leaderId) syncSend(leaderId, { type:'layout', layout: L });
+}
+let identTimer = null;
+function identify(){
+  if (isControl) return;
+  const el = document.getElementById('ident'), t = TILE;
+  el.innerHTML = '';
+  el.append(myTag);
+  const sm = document.createElement('small');
+  sm.textContent = `tile x ${+t.x.toFixed(3)} y ${+t.y.toFixed(3)} · ${window.innerWidth}×${window.innerHeight} · canvas ${canvasStr()}`;
+  el.append(sm); el.style.display = 'flex';
+  clearTimeout(identTimer); identTimer = setTimeout(() => { el.style.display = 'none'; }, 5000);
+}
 function requestSkip(){
   if (scenes.length < 2 || nxt >= 0) return;
   if (isLeader()) startFade((cur + 1) % scenes.length);
@@ -514,7 +569,11 @@ function requestSkip(){
 // ===========================================================================
 let room = qs.get('sync');                 // or scenes.json sync.room, resolved in syncStart()
 let syncKey = qs.get('key') || null;       // or scenes.json sync.key: shared secret checked in hello
-const myTag = qs.get('id') || Math.random().toString(36).slice(2, 8);   // human-readable name for status
+const myTag = qs.get('id') || (() => {    // human-readable name; a random one survives reloads of this window
+  let t = null; try { t = sessionStorage.getItem('vjTag'); } catch(e){}
+  if (!t) { t = Math.random().toString(36).slice(2, 8); try { sessionStorage.setItem('vjTag', t); } catch(e){} }
+  return t;
+})();
 const UA = (navigator.userAgent.match(/(Chrome|Chromium|Firefox|Safari|Edg)\/[\d.]+/) || [''])[0] + ' ' + navigator.platform;
 let myId = myTag;                          // PeerJS id once registered; equals leaderId while self-leading
 let leaderId = myId;                       // everyone leads itself until connected, so PGM works standalone
@@ -535,7 +594,7 @@ function roomPeerId(){
   return 'vjshow-' + (safe || 'show');
 }
 function peerList(){                        // [{id, tag, role, ua}], self included, for the status line
-  if (isLeader()) return [{ id: myId, tag: myTag, role: MODE, ua: UA }, ...[...followers].map(([id, f]) => ({ id, tag: f.tag, role: f.role, ua: f.ua }))];
+  if (isLeader()) return [{ id: myId, tag: myTag, role: MODE, ua: UA, win: winSize() }, ...[...followers].map(([id, f]) => ({ id, tag: f.tag, role: f.role, ua: f.ua, win: f.win }))];
   return statePeers;
 }
 function tileTags(){ return peerList().filter(p => p.role !== 'control').map(p => p.tag || p.id); }
@@ -641,7 +700,7 @@ function follow(){
     conn.on('open', () => {
       if (peer !== p) return;
       opened = true; leaderConn = conn; leaderId = roomPeerId(); pingSamples = []; targetOffset = null; lastPong = now();
-      conn.send({ type: 'hello', role: MODE, tag: myTag, ua: UA, key: syncKey });
+      conn.send({ type: 'hello', role: MODE, tag: myTag, ua: UA, key: syncKey, win: winSize() });
       console.log('[sync] following room', room, 'via', serverKind, 'PeerServer');
       panelStatus();
     });
@@ -669,7 +728,7 @@ function onFollower(conn){
         setTimeout(() => conn.close(), 200); return;
       }
       hello = true;
-      followers.set(conn.peer, { conn, role: m.role === 'control' ? 'control' : 'display', ua: m.ua || '', tag: m.tag || conn.peer });
+      followers.set(conn.peer, { conn, role: m.role === 'control' ? 'control' : 'display', ua: m.ua || '', tag: m.tag || conn.peer, win: m.win || null });
       console.log('[sync] follower', m.tag, m.role, m.ua);
       panelStatus(); syncBroadcastState();
       return;
@@ -690,7 +749,7 @@ function syncSend(id, msg){
 function syncBroadcast(msg){ for (const [id] of followers) syncSend(id, msg); }
 function stateMsg(){
   return { type:'state', epoch, cur: scenes[cur] && scenes[cur].name, nxt: nxt >= 0 ? scenes[nxt].name : null,
-           sceneStart, fadeStart, overrides, hold, peers: peerList().map(p => ({ id: p.id, tag: p.tag, role: p.role, ua: p.ua })) };
+           sceneStart, fadeStart, overrides, hold, layout, peers: peerList().map(p => ({ id: p.id, tag: p.tag, role: p.role, ua: p.ua, win: p.win })) };
 }
 function syncBroadcastState(){ if (room && isLeader() && scenes.length && followers.size) syncBroadcast(stateMsg()); }
 
@@ -710,6 +769,7 @@ function handleData(from, m){
   } else if (m.type === 'state') {
     if (isLeader()) return;
     statePeers = m.peers || [];
+    if (JSON.stringify(m.layout || null) !== JSON.stringify(layout)) { layout = m.layout || null; resize(true); panelLayout(true); }
     const ci = scenes.findIndex(s => s.name === m.cur);
     if (ci < 0) { panelStatus(); return; }        // config not caught up yet; next state msg will do
     const ni = m.nxt ? scenes.findIndex(s => s.name === m.nxt) : -1;
@@ -729,6 +789,13 @@ function handleData(from, m){
     if (isLeader()) jumpTo(m.scene);
   } else if (m.type === 'hold') {
     if (isLeader()) setHold(!!m.on);
+  } else if (m.type === 'geo') {
+    const f = followers.get(from); if (f) { f.win = m.win || null; panelStatus(); syncBroadcastState(); }
+  } else if (m.type === 'layout') {
+    if (isLeader()) setLayout(m.layout);
+  } else if (m.type === 'identify') {             // from a controller: every display shows its tag
+    if (isLeader()) syncBroadcast({ type:'identify' });
+    identify();
   } else if (m.type === 'reloadAll') {            // from a controller: every display reloads, the leader last
     if (!isLeader()) return;
     console.log('[sync] reload requested by', from);
@@ -805,6 +872,43 @@ function panelStatus(){
   if (isLeader()) { el.style.color = '#f96'; el.textContent = `NO DISPLAY in room "${room}"${via}: running standalone, nothing else is controlled.\nOpen a display in the same room; this page will attach to it.` + note; return; }
   el.style.color = '#8c8';
   el.textContent = `room "${room}"${via}: tiles ${tileTags().join(', ') || '-'}` + note;
+  panelLayout(false);
+}
+// ---- layout section: canvas aspect, presets, one tile dropdown per display --
+function ratioStr(w, h){ w = Math.round(w); h = Math.round(h); const g = (a, b) => b ? g(b, a % b) : a, d = g(w, h) || 1; return `${w / d}:${h / d}`; }
+function displays(){ return peerList().filter(p => p.role !== 'control').sort((a, b) => String(a.tag).localeCompare(String(b.tag))); }
+function displayAspect(){                     // [w, h] of the first display that reported its window; portrait if none
+  const d = displays().find(p => Array.isArray(p.win) && p.win[0] > 0 && p.win[1] > 0);
+  return d ? d.win : [1080, 1920];
+}
+let layoutSig = '';
+function panelLayout(force){
+  if (!isControl) return;
+  const L = activeLayout(), ds = displays();
+  const sig = JSON.stringify([L, ds.map(d => [d.tag, d.win])]);
+  if (!force && sig === layoutSig) return;
+  layoutSig = sig;
+  if (document.activeElement !== $('lcanvas')) $('lcanvas').value = canvasStr();
+  const cols = L ? Math.max(1, L.cols | 0) : 1, rows = L ? Math.max(1, L.rows | 0) : 1;
+  const box = $('ldisplays'); box.innerHTML = '';
+  if (!ds.length) { box.innerHTML = '<div class="status">no displays connected</div>'; return; }
+  for (const d of ds) {
+    const row = document.createElement('div'); row.className = 'drow';
+    const name = document.createElement('span'); name.textContent = d.tag;
+    const size = document.createElement('span'); size.textContent = d.win ? `${d.win[0]}×${d.win[1]}` : '?';
+    const sel = document.createElement('select');
+    const opt = (v, t) => { const o = document.createElement('option'); o.value = v; o.textContent = t; sel.appendChild(o); };
+    opt('', 'own URL tile'); opt(-1, 'whole canvas');
+    for (let i = 0; i < cols * rows; i++) opt(i, rows > 1 ? `col ${i % cols + 1}, row ${Math.floor(i / cols) + 1}` : `${i + 1} of ${cols}`);
+    sel.value = L && L.tiles && d.tag in L.tiles ? String(L.tiles[d.tag]) : '';
+    sel.addEventListener('change', () => {
+      const n = Object.assign({ cols, rows, tiles: {} }, activeLayout() || {}); n.tiles = Object.assign({}, n.tiles);
+      if (!n.canvas) n.canvas = canvasStr();
+      if (sel.value === '') delete n.tiles[d.tag]; else n.tiles[d.tag] = +sel.value;
+      setLayout(n);
+    });
+    row.append(name, size, sel); box.appendChild(row);
+  }
 }
 function panelSceneName(){
   if ($('plock').checked && panel.scene && scenes.some(s => s.name === panel.scene)) return panel.scene;
@@ -891,6 +995,22 @@ if (isControl) {
   $('plock').addEventListener('change', () => { if (!$('plock').checked) panelRebuild(); });
   $('pnext').addEventListener('click', requestSkip);
   $('phold').addEventListener('change', e => setHold(e.target.checked));
+  $('lcanvas').addEventListener('change', () => {
+    const v = $('lcanvas').value.trim(); if (!/^\d+(\.\d+)?([:x\/]\d+(\.\d+)?)?$/.test(v)) { $('lcanvas').value = canvasStr(); return; }
+    setLayout(Object.assign({ cols: 1, rows: 1, tiles: {} }, activeLayout() || {}, { canvas: v }));
+  });
+  $('lmirror').addEventListener('click', () => {
+    const [w, h] = displayAspect(), tiles = {};
+    for (const d of displays()) tiles[d.tag] = -1;
+    setLayout({ canvas: ratioStr(w, h), cols: 1, rows: 1, tiles });
+  });
+  $('lspan').addEventListener('click', () => {
+    const [cols, rows] = $('lgrid').value.split('x').map(Number), [w, h] = displayAspect(), tiles = {};
+    displays().forEach((d, i) => { tiles[d.tag] = i < cols * rows ? i : -1; });
+    setLayout({ canvas: ratioStr(w * cols, h * rows), cols, rows, tiles });
+  });
+  $('lident').addEventListener('click', () => { if (leaderId && !isLeader()) syncSend(leaderId, { type:'identify' }); });
+  $('lclear').addEventListener('click', () => setLayout(null));
   $('preload').addEventListener('click', () => { if (leaderId) syncSend(leaderId, { type:'reloadAll' }); });
   $('pplay').addEventListener('click', () => { const n = panelSceneName(); if (n) { jumpTo(n); flash($('pplay'), 'fading…'); } });
   $('preset').addEventListener('click', () => {
@@ -906,6 +1026,7 @@ if (isControl) {
       const name = s.name || s.module || s.shader;
       if (overrides[name]) s.params = Object.assign({}, s.params || {}, overrides[name]);
     }
+    if (layout) cfg.layout = layout;
     try {
       const r = await fetch('scenes', { method:'POST', body: JSON.stringify(cfg, null, 2) });
       if (!r.ok) throw new Error(await r.text());

@@ -104,6 +104,11 @@ Test: `npm test`.
 
 ## 7c. Tile map overlay and identify
 
+*Partly done (2026-09-27):* displays send their window size; *identify*; and a *layout*
+section on the control page that sets the canvas aspect and assigns each display a grid
+cell (mirror, span NxM, per-display dropdown), saved to `scenes.json` `"layout"`. Not yet:
+the SVG tile map, `region`/`fit` on the wire, unequal tiles or dragging.
+
 **What's missing on the wire:** a display's geometry. The hello and the leader's `peers`
 list carry role, tag, browser and key, not where the display sits on the canvas. Add
 `tile` (the rect asked for), `region` (the rect actually shown, which differs under
