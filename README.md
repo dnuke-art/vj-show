@@ -189,6 +189,8 @@ and any late joiner converges on the same value within a frame or two.
 - *hold* stops the autopilot on the scene that is playing; *play now* and *next scene*
   still work, and releasing it gives the current scene a full `duration`. It lives in the
   leader's state, so it survives a failover but not a reload of every display.
+- *stats* turns the fps/sync overlay on or off on every display (the `s` key still toggles
+  one display locally). It lives in the leader's state like *hold*.
 - *reload displays* reloads every display in the room, the leader last; they re-form the
   room within a few seconds. For a display that isn't in the room, add or change
   `"reloadToken"` in `scenes.json`: every display reloads on its next poll. Neither can
@@ -232,6 +234,11 @@ it restarts.
     ./kiosk.sh          # fullscreen Chromium on the display machine
     npm test            # headless three-window sync test against a running server on :8765
     node test/layout.test.mjs   # control-page layout: span, mirror, per-display tile, identify
+
+The server logs every PeerServer join and leave. `peer + vjshow-show` is the leader (the
+room id), `d-<id>-xxxx` is another display and `ctl-<id>-xxxx` a control page, where `<id>`
+is the window's `?id=`. A control page waiting for a display keeps one id; it doesn't
+re-register on every retry.
 
 Keys: `s` stats, `n` skip to next scene (forwarded to the leader when synced), `f`
 fullscreen. Edit `scenes.json` or anything in `scenes/` while it runs. Displays only

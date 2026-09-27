@@ -1,4 +1,5 @@
-// Layout from the control page: span, mirror, per-display cell, canvas, identify, survive reload, clear.
+// Control page room-wide settings: layout (span, mirror, per-display cell, canvas, identify,
+// survive reload, clear) and the stats overlay toggle.
 //   node server.js 8765 &  then  CHROME=... node test/layout.test.mjs [http://localhost:8765/]
 import puppeteer from 'puppeteer-core';
 const B = process.argv[2] || 'http://localhost:8765/', room = 'lay' + Date.now().toString(36);
@@ -24,6 +25,11 @@ await c.evaluate(() => { const i = document.getElementById('lcanvas'); i.value =
 check('canvas field keeps tiles, changes aspect', await tile(d), '0.5,0,0.5,1 1:1');
 await c.click('#lident'); await sleep(800);
 check('identify shows the tag', await a.evaluate(() => getComputedStyle(document.getElementById('ident')).display + ' ' + document.getElementById('ident').firstChild.textContent), 'flex a');
+const statsShown = async () => (await Promise.all([a, d].map(p => p.evaluate(() => getComputedStyle(document.getElementById('stats')).display)))).join(',');
+await c.click('#pstats'); await sleep(1500);
+check('stats checkbox shows the overlay on every display', await statsShown(), 'block,block');
+await c.click('#pstats'); await sleep(1500);
+check('and hides it again', await statsShown(), 'none,none');
 await d.reload(); await sleep(5000);
 check('layout survives a display reload', await tile(d), '0.5,0,0.5,1 1:1');
 await c.click('#lclear'); await sleep(1500);

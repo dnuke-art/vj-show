@@ -52,6 +52,7 @@
     <select id="pscene"></select>
     <label><input type="checkbox" id="plock"> lock scene</label>
     <label><input type="checkbox" id="phold"> hold</label>
+    <label title="fps/sync overlay on every display"><input type="checkbox" id="pstats"> stats</label>
     <button id="pplay">play now</button>
     <button id="pnext">next scene</button>
     <button id="preset">reset overrides</button>
@@ -439,6 +440,8 @@ function drawScene(scene, target, t){
 let frames = 0, lastFpsT = now(), fps = 0, lastLog = now();
 let showStats = qs.get('stats') === '1';
 if (showStats) statsEl.style.display = 'block';
+function applyStats(on){ showStats = on; statsEl.style.display = on ? 'block' : 'none'; }
+let roomStats = false;                     // stats overlay on every display, set from the control page
 const bootT = now();
 
 function composite(x, y, w, h, mixAmt){
@@ -524,7 +527,7 @@ function frame(){
 
 // ---- input ----------------------------------------------------------------
 window.addEventListener('keydown', e => {
-  if (e.key === 's') { showStats = !showStats; statsEl.style.display = showStats ? 'block' : 'none'; }
+  if (e.key === 's') applyStats(!showStats);
   if (e.key === 'n') requestSkip();
   if (e.key === 'f') { if (document.fullscreenElement) document.exitFullscreen(); else document.documentElement.requestFullscreen(); }
 });
@@ -555,6 +558,11 @@ function identify(){
   sm.textContent = `tile x ${+t.x.toFixed(3)} y ${+t.y.toFixed(3)} · ${window.innerWidth}×${window.innerHeight} · canvas ${canvasStr()}`;
   el.append(sm); el.style.display = 'flex';
   clearTimeout(identTimer); identTimer = setTimeout(() => { el.style.display = 'none'; }, 5000);
+}
+// Leader-owned like hold. Displays apply it when it changes, so the 's' key still works locally.
+function setRoomStats(on){
+  if (!isLeader()) { if (leaderId) syncSend(leaderId, { type:'stats', on }); return; }
+  roomStats = on; if (!isControl) applyStats(on); syncBroadcastState(); panelUpdate();
 }
 function requestSkip(){
   if (scenes.length < 2 || nxt >= 0) return;
@@ -646,9 +654,21 @@ function teardown(){
   leaderConn = null; followers.clear();
 }
 function connect(){
+  // a controller keeps its PeerServer registration across retries and just dials the room
+  // again, so a control page waiting for a display is one id in the server log, not a new
+  // one every few seconds. Displays re-register: they must try to claim the room first.
+  if (isControl && !rejected && room && peer && peer.open && !peer.disconnected && !peer.destroyed) {
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+    dial(peer); return;
+  }
   teardown();
   if (rejected || !room) return;
   if (isControl) follow(); else claim();
+}
+// Readable PeerServer ids for everyone but the leader: "ctl-<tag>-xxxx" / "d-<tag>-xxxx".
+function anonId(){
+  const t = String(myTag).replace(/[^A-Za-z0-9]/g, '').slice(0, 16) || 'x';
+  return `${isControl ? 'ctl' : 'd'}-${t}-${Math.random().toString(36).slice(2, 6)}`;
 }
 function scheduleReconnect(why){
   if (rejected || reconnectTimer) return;
@@ -687,34 +707,40 @@ function unlockInterfaces(){
     .then(s => { s.getTracks().forEach(t => t.stop()); connect(); })
     .catch(e => console.warn('[sync] no mic permission:', e.message));
 }
-// Everyone else: register anonymously and open one channel to the room id.
+// Everyone else: register under a readable id and open one channel to the room id.
 function follow(){
   if (peer) { const old = peer; peer = null; try { old.destroy(); } catch(e){} }
   followers.clear(); leaderConn = null;
-  const p = peer = newPeer(undefined);
-  p.on('open', id => {
-    if (peer !== p) return;
-    myId = id;
-    const conn = p.connect(roomPeerId(), { reliable: true, serialization: 'json', metadata: { role: MODE, tag: myTag } });
-    let opened = false;
-    conn.on('open', () => {
-      if (peer !== p) return;
-      opened = true; leaderConn = conn; leaderId = roomPeerId(); pingSamples = []; targetOffset = null; lastPong = now();
-      conn.send({ type: 'hello', role: MODE, tag: myTag, ua: UA, key: syncKey, win: winSize() });
-      console.log('[sync] following room', room, 'via', serverKind, 'PeerServer');
-      panelStatus();
-    });
-    conn.on('data', m => handleData(leaderId, m));
-    conn.on('close', () => { if (leaderConn === conn) { leaderConn = null; if (!isLeader()) statePeers = []; } if (peer === p) scheduleReconnect('leader gone'); });
-    conn.on('error', e => console.warn('[sync] channel error', e.type || '', e.message || e));
-    setTimeout(() => { if (!opened && peer === p) { unlockInterfaces(); scheduleReconnect('connect timed out'); } }, 8000);
-  });
+  const p = peer = newPeer(anonId());
+  p.on('open', id => { if (peer !== p) return; myId = id; dial(p); });
   p.on('error', e => {
     if (peer !== p) return;
     if (e.type === 'peer-unavailable') scheduleReconnect(isControl ? 'no display in the room yet' : 'leader vanished');
+    else if (e.type === 'unavailable-id') { const old = peer; peer = null; try { old.destroy(); } catch(_){} scheduleReconnect('id taken'); }
     else if (!SERVER_ERRORS.includes(e.type)) console.warn('[sync] peer error', e.type, e.message);
   });
   p.on('disconnected', () => { if (peer === p) scheduleReconnect('lost the PeerServer'); });
+}
+// One attempt at a channel to the leader. Only the latest attempt may act; an older one
+// that closes or times out late is ignored.
+let dialGen = 0, dialConn = null;
+function dial(p){
+  const gen = ++dialGen, live = () => peer === p && gen === dialGen;
+  if (dialConn) { try { dialConn.close(); } catch(e){} }
+  followers.clear(); leaderConn = null;
+  const conn = dialConn = p.connect(roomPeerId(), { reliable: true, serialization: 'json', metadata: { role: MODE, tag: myTag } });
+  let opened = false;
+  conn.on('open', () => {
+    if (!live()) return;
+    opened = true; leaderConn = conn; leaderId = roomPeerId(); pingSamples = []; targetOffset = null; lastPong = now();
+    conn.send({ type: 'hello', role: MODE, tag: myTag, ua: UA, key: syncKey, win: winSize() });
+    console.log('[sync] following room', room, 'via', serverKind, 'PeerServer');
+    panelStatus();
+  });
+  conn.on('data', m => handleData(leaderId, m));
+  conn.on('close', () => { if (leaderConn === conn) { leaderConn = null; if (!isLeader()) statePeers = []; } if (live()) scheduleReconnect('leader gone'); });
+  conn.on('error', e => console.warn('[sync] channel error', e.type || '', e.message || e));
+  setTimeout(() => { if (!opened && live()) { unlockInterfaces(); scheduleReconnect('connect timed out'); } }, 8000);
 }
 // Leader side: a follower connected. First message must be hello with the right key.
 function onFollower(conn){
@@ -749,7 +775,7 @@ function syncSend(id, msg){
 function syncBroadcast(msg){ for (const [id] of followers) syncSend(id, msg); }
 function stateMsg(){
   return { type:'state', epoch, cur: scenes[cur] && scenes[cur].name, nxt: nxt >= 0 ? scenes[nxt].name : null,
-           sceneStart, fadeStart, overrides, hold, layout, peers: peerList().map(p => ({ id: p.id, tag: p.tag, role: p.role, ua: p.ua, win: p.win })) };
+           sceneStart, fadeStart, overrides, hold, layout, stats: roomStats, peers: peerList().map(p => ({ id: p.id, tag: p.tag, role: p.role, ua: p.ua, win: p.win })) };
 }
 function syncBroadcastState(){ if (room && isLeader() && scenes.length && followers.size) syncBroadcast(stateMsg()); }
 
@@ -775,6 +801,7 @@ function handleData(from, m){
     const ni = m.nxt ? scenes.findIndex(s => s.name === m.nxt) : -1;
     epoch = m.epoch; cur = ci; nxt = ni; sceneStart = m.sceneStart; fadeStart = ni >= 0 ? m.fadeStart : -1;
     overrides = m.overrides || {}; hold = !!m.hold;
+    if (!!m.stats !== roomStats) { roomStats = !!m.stats; if (!isControl) applyStats(roomStats); }
     panelUpdate();
   } else if (m.type === 'rejected') {
     rejected = true; showErr('sync: this room rejected us (' + m.reason + '). Check sync.key / ?key=');
@@ -791,6 +818,8 @@ function handleData(from, m){
     if (isLeader()) setHold(!!m.on);
   } else if (m.type === 'geo') {
     const f = followers.get(from); if (f) { f.win = m.win || null; panelStatus(); syncBroadcastState(); }
+  } else if (m.type === 'stats') {
+    if (isLeader()) setRoomStats(!!m.on);
   } else if (m.type === 'layout') {
     if (isLeader()) setLayout(m.layout);
   } else if (m.type === 'identify') {             // from a controller: every display shows its tag
@@ -966,7 +995,7 @@ function fmt(n){ return Math.abs(n) >= 100 ? n.toFixed(0) : Math.abs(n) >= 10 ? 
 // Incoming state: move sliders the user is not touching, switch scene if not locked.
 function panelUpdate(){
   if (!isControl) return;
-  $('phold').checked = hold;
+  $('phold').checked = hold; $('pstats').checked = roomStats;
   const want = panelSceneName();
   if (want !== panel.scene) { panelRebuild(); return; }
   const scene = scenes.find(s => s.name === want);
@@ -995,6 +1024,7 @@ if (isControl) {
   $('plock').addEventListener('change', () => { if (!$('plock').checked) panelRebuild(); });
   $('pnext').addEventListener('click', requestSkip);
   $('phold').addEventListener('change', e => setHold(e.target.checked));
+  $('pstats').addEventListener('change', e => setRoomStats(e.target.checked));
   $('lcanvas').addEventListener('change', () => {
     const v = $('lcanvas').value.trim(); if (!/^\d+(\.\d+)?([:x\/]\d+(\.\d+)?)?$/.test(v)) { $('lcanvas').value = canvasStr(); return; }
     setLayout(Object.assign({ cols: 1, rows: 1, tiles: {} }, activeLayout() || {}, { canvas: v }));
