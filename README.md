@@ -86,6 +86,17 @@ the sub-frustum for this tile so 3D scenes span displays correctly.
 `params`. That is the whole accretion model: a new tweak is a new entry, and nothing old
 changes.
 
+### Private scenes (`private/`)
+
+`private/` is gitignored: scenes, models and textures that shouldn't be in the public repo
+or on GitHub Pages. List them in `private/scenes.json`, same format as `scenes.json`
+(`{"scenes": [...]}`); `server.js` reports that the file exists and every window appends
+those scenes to the show, hot-reloading them like any other. Paths are relative to the
+page, e.g. `"module": "private/sliced-heart.js"`, and a module can fetch files next to
+itself with `new URL('model.stl', import.meta.url)`. The control page's *save* writes only
+`scenes.json`, so slider tweaks to a private scene aren't saved; copy them into
+`private/scenes.json` by hand. Anything in `private/` is still served to the LAN.
+
 ### The heart (`scenes/heart.js`)
 
 The TiXL `HeartScatter` graph from `tixl-heart-project`, ported operator by operator.

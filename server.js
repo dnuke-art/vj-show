@@ -24,7 +24,9 @@ app.use((req, res, next) => {
 });
 
 // capability probe: the control page enables "save" only if this answers
-app.get('/scenes', (req, res) => res.json({ save: true, relay: true }));
+// private/: scenes kept out of git. If private/scenes.json exists, the player appends its
+// scenes to the show. Checked per request, so creating it needs no restart.
+app.get('/scenes', (req, res) => res.json({ save: true, relay: true, private: fs.existsSync(path.join(ROOT, 'private', 'scenes.json')) }));
 
 // control panel "save": write scenes.json atomically; displays hot-reload it
 app.post('/scenes', express.json({ limit: '1mb' }), (req, res) => {

@@ -320,17 +320,28 @@ async function fetchText(url){
   return r.text();
 }
 
+// What the server offers (server.js GET /scenes): save, relay, private scenes. null on a static host.
+let capsPromise = null;
+function serverCaps(){
+  return capsPromise || (capsPromise = fetch('scenes', { cache:'no-store' }).then(r => r.ok ? r.json() : null).catch(() => null));
+}
 let bootToken;                                 // scenes.json reloadToken as of page load
 let configCfg = null;                          // parsed scenes.json as of the last successful load
 let moduleLoads = 0;                           // cache-buster: each changed module gets a fresh URL
 // Every poll re-reads scenes.json and every scene source. Nothing is rebuilt unless one of
 // them changed; then only the changed scenes recompile and the one on screen keeps playing.
+let privateText = '';                          // private/scenes.json as of the last successful load
 async function loadConfig(){
   const text = await fetchText('scenes.json');
-  const cfg = text === configText ? configCfg : JSON.parse(text);
+  // private/scenes.json (gitignored) adds scenes to the show; they are never written back by save
+  const caps = await serverCaps();
+  const priv = caps && caps.private ? await fetchText('private/scenes.json').catch(() => '') : '';
+  const same = text === configText && priv === privateText;
+  const cfg = same ? configCfg : JSON.parse(text);
+  if (!same && priv) cfg.scenes = [...(cfg.scenes || []), ...(JSON.parse(priv).scenes || []).map(s => Object.assign({}, s, { private: true }))];
   const srcs = new Map();
   for (const s of cfg.scenes || []) { const key = s.module || s.shader; if (!srcs.has(key)) srcs.set(key, await fetchText(key)); }
-  if (text === configText && [...srcs].every(([key, src]) => programs.has(key) && programs.get(key).src === src)) return false;
+  if (same && [...srcs].every(([key, src]) => programs.has(key) && programs.get(key).src === src)) return false;
   // "reloadToken": change it in scenes.json and every display reloads, synced or not
   const token = cfg.reloadToken === undefined ? null : cfg.reloadToken;
   if (bootToken === undefined) bootToken = token;
@@ -373,7 +384,7 @@ async function loadConfig(){
   }
   const prevName = cur >= 0 && scenes[cur] ? scenes[cur].name : null;
   const nextName = nxt >= 0 && scenes[nxt] ? scenes[nxt].name : null;
-  configText = text; configCfg = cfg;
+  configText = text; privateText = priv; configCfg = cfg;
   config = { crossfade: +cfg.crossfade || 3, renderScale: +cfg.renderScale || 1,
              reloadInterval: +cfg.reloadInterval || 5, scenes: cfg.scenes, sync: cfg.sync || {},
              canvas: cfg.canvas || '16:9', fit: cfg.fit, layout: cfg.layout || null };
@@ -800,7 +811,7 @@ function dial(p){
 let relayOk = null, relayMode = false;            // server offers a relay; this control page is using it
 function relayAvailable(){
   if (relayOk !== null || serverKind !== 'local') return Promise.resolve(relayOk = !!relayOk && serverKind === 'local');
-  return fetch('scenes', { cache:'no-store' }).then(r => r.ok ? r.json() : null).then(c => (relayOk = !!(c && c.relay))).catch(() => (relayOk = false));
+  return serverCaps().then(c => (relayOk = !!(c && c.relay)));
 }
 // A WebSocket that reopens itself 2 s after it drops, until stop().
 function relaySocket(role, onOpen, onData){
@@ -1162,7 +1173,7 @@ function flash(btn, doneText){
 }
 if (isControl) {
   for (const b of document.querySelectorAll('#panel button')) b.addEventListener('click', () => flash(b));
-  fetch('scenes', { cache:'no-store' }).then(r => r.ok ? r.json() : null).catch(() => null).then(c => {
+  serverCaps().then(c => {
     if (!c || !c.save) { $('psave').disabled = true; $('psave').title = 'no server to save to (static host); tweaks live in the leader until it restarts'; }
   });
   $('pscene').addEventListener('change', e => { panel.scene = e.target.value; $('plock').checked = true; panelRebuild(); });
