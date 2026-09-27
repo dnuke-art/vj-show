@@ -201,9 +201,9 @@ if (tileQ.length === 4) TILE = { x: tileQ[0], y: tileQ[1], w: tileQ[2], h: tileQ
 else { const c = Math.min(COLS - 1, tileQ[0] | 0), r = Math.min(ROWS - 1, tileQ[1] | 0);
        TILE = { x: c / COLS, y: r / ROWS, w: 1 / COLS, h: 1 / ROWS }; }
 if (isControl) TILE = { x: 0, y: 0, w: 1, h: 1 };                     // the preview shows the whole canvas
-const FIT_Q = qs.get('fit');
+const FIT_Q = qs.get('fit'), CANVAS_Q = qs.get('canvas');
 function canvasAspect(){
-  const c = String(config.canvas || '16:9'), m = c.split(/[:x\/]/).map(Number);
+  const c = String(CANVAS_Q || config.canvas || '16:9'), m = c.split(/[:x\/]/).map(Number);
   return m.length >= 2 && m[1] ? m[0] / m[1] : (+c || 16 / 9);
 }
 function fitMode(){ const f = FIT_Q || config.fit || 'contain'; return ['contain', 'cover', 'fill'].includes(f) ? f : 'contain'; }
@@ -764,7 +764,9 @@ function syncSlewClock(){
 }
 
 function syncStart(){
-  if (!room && config.sync && config.sync.room) room = String(config.sync.room);
+  // scenes.json's room is for the venue's own PeerServer. On the public one (GitHub Pages) every
+  // visitor would land in one room and control each other's screens, so there it takes ?sync=.
+  if (!room && config.sync && config.sync.room && resolveServerKind() !== 'public') room = String(config.sync.room);
   if (!syncKey && config.sync && config.sync.key) syncKey = String(config.sync.key);
   panelStatus();
   if (!room) return;

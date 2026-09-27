@@ -99,7 +99,8 @@ same scene from the front.
 ### Canvas, tiles and fit
 
 Nothing in the show is specified in pixels. `scenes.json` declares the shape the work is
-composed for, `"canvas": "16:9"`, and every window shows some rectangle of that canvas.
+composed for, `"canvas": "16:9"` (or `?canvas=16:9` per window), and every window shows
+some rectangle of that canvas.
 
 - A tile is a normalized rectangle of the canvas: `?grid=cols,rows&tile=col,row` (row 0
   at the top), or `?tile=x,y,w,h` in 0..1 units for unequal tiles. A window with no tile
@@ -207,7 +208,10 @@ network that allows peer-to-peer traffic can open it with a room and show one an
     https://pixeldestrukt.github.io/vj-show/?sync=<token>&grid=2,1&tile=1,0
     https://pixeldestrukt.github.io/vj-show/?sync=<token>&mode=control
 
-Pick a token, not a word, since the PeerServer is public. *Save to scenes.json* is
+Without `?sync=` each visitor gets a standalone show: the room in `scenes.json` is ignored
+on the public PeerServer, so strangers never land in one room controlling each other.
+The canvas is portrait (`9:16`) for the current install; add `?canvas=16:9` to fill a
+landscape screen. Pick a token, not a word, since the PeerServer is public. *Save to scenes.json* is
 disabled there because there is no server to write to; tweaks live in the leader until
 it restarts.
 
