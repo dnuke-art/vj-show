@@ -373,6 +373,7 @@ async function loadConfig(){
       });
     }
     list.push({
+      renderScale: +s.renderScale || 0,      // per-scene override of the show's renderScale
       name: s.name || key,
       shader: key,
       duration: +s.duration || 30,
@@ -406,10 +407,17 @@ async function loadConfig(){
 function hashStr(s){ let h = 2166136261; for (const c of s) { h ^= c.charCodeAt(0); h = Math.imul(h, 16777619); } return ((h >>> 0) % 1000) / 1000; }
 
 // ---- sizing ---------------------------------------------------------------
+// Displays draw at device pixels (a retina window otherwise gets stretched 2x by the browser),
+// capped at 2; ?dpr=1 opts out on a weak machine. renderScale then applies on top of that,
+// per scene when the scene sets its own (a mesh with thin edges suffers more than a shader).
+const DPR = isControl ? 1 : Math.min(2, Math.max(0.5, +qs.get('dpr') || window.devicePixelRatio || 1));
+function sceneScale(i){ const sc = i >= 0 && scenes[i]; return (sc && sc.renderScale) || config.renderScale; }
+function renderScaleNow(){ return Math.max(sceneScale(cur), nxt >= 0 ? sceneScale(nxt) : 0); }
+let appliedScale = 0;
 function resize(force){
   TILE = layoutTile();
   const A = canvasAspect(), fit = fitMode();
-  let w = Math.floor(window.innerWidth), h = Math.floor(window.innerHeight), mon = 0;
+  let w = Math.floor(window.innerWidth * DPR), h = Math.floor(window.innerHeight * DPR), mon = 0;
   if (isControl) {                                     // two monitors (PGM | PVW) at the show's aspect, ≤ 30% of height
     mon = Math.floor(Math.min((window.innerWidth - MON_GAP) / 2, window.innerHeight * 0.3 * A));
     w = mon * 2 + MON_GAP; h = Math.max(1, Math.floor(mon / A));
@@ -432,8 +440,9 @@ function resize(force){
   }                                                    // fill: whole window ← whole tile, stretched
   const viewChanged = vx !== view.x || vy !== view.y || vw !== view.w || vh !== view.h;
   view = { x: vx, y: vy, w: vw, h: vh }; region = { X: RX, Y: RY, W: RW, H: RH };
-  const rw = Math.max(1, Math.floor(vw * config.renderScale));
-  const rh = Math.max(1, Math.floor(vh * config.renderScale));
+  appliedScale = renderScaleNow();
+  const rw = Math.max(1, Math.floor(vw * appliedScale));
+  const rh = Math.max(1, Math.floor(vh * appliedScale));
   force = force || viewChanged;
   if (force || rw !== renderW || rh !== renderH) {
     freeTarget(targetA); freeTarget(targetB);
@@ -529,6 +538,7 @@ setInterval(tick, 100);
 function frame(){
   requestAnimationFrame(frame);
   if (!scenes.length) return;
+  if (renderScaleNow() !== appliedScale) resize(false);   // a scene with its own renderScale is on (or fading in)
   const t = showNow();
   const elapsed = t - sceneStart;
   const scene = scenes[cur];

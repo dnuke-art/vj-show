@@ -52,7 +52,10 @@ over a twelve-hour run.
   or throttled window still keeps the show moving.
 - Renders the current scene and, during a fade, the next one into two offscreen targets
   at `renderScale` × display resolution, then composites with a smoothstep mix and
-  upscales. Half resolution is the baseline for old GPUs.
+  upscales. Half resolution is the baseline for old GPUs. A scene entry can set its own
+  `"renderScale"` (a mesh with thin edges looks far worse at half resolution than a soft
+  shader), and displays draw at device pixels, capped at 2× (`?dpr=1` to opt out), so a
+  retina window isn't stretched by the browser on top.
 - Polls `scenes.json` and every scene source every `reloadInterval` seconds. If anything
   changed it recompiles just that scene and keeps playing. The scene on screen survives
   the reload if it still exists. A scene that fails to compile leaves everything as it
