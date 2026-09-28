@@ -47,8 +47,10 @@ try {
   check('slider override reached a and b', JSON.stringify(oa) === JSON.stringify(ob) && Object.values(oa)[0] && Object.values(oa)[0].distance === 4.2, JSON.stringify(ob));
 
   await c.evaluate(() => jumpTo('rings'));
-  await until(async () => (await state(b)).scene === 'rings' && (await state(b)).nxt < 0, 15000, 'jump to rings reaches b');
-  check('play-now jumped a and b to rings', (await state(a)).scene === 'rings' && (await state(b)).scene === 'rings');
+  // each display ends the crossfade on its own synced clock, so a and b can differ for a few
+  // ms at the boundary; wait for both rather than reading one right after the other
+  const landed = await until(async () => { const sa = await state(a), sb = await state(b); return sa.scene === 'rings' && sa.nxt < 0 && sb.scene === 'rings' && sb.nxt < 0; }, 15000, 'jump to rings reaches a and b').catch(() => false);
+  check('play-now jumped a and b to rings', !!landed);
 
   // failover: kill the leader
   const tKill = Date.now();

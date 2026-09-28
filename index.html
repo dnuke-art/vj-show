@@ -511,6 +511,10 @@ function tick(){
     cur = nxt; nxt = -1; sceneStart = fadeStart + config.crossfade; fadeStart = -1;
     if (isLeader()) syncBroadcastState();
     panelUpdate();
+    if (isLeader() && pendingJump !== null) {
+      const j = scenes.findIndex(s => s.name === pendingJump); pendingJump = null;
+      if (j >= 0 && j !== cur) startFade(j);
+    }
   }
   if (isLeader() && !hold && nxt < 0 && scenes.length > 1 && t - sceneStart >= scenes[cur].duration) {
     startFade((cur + 1) % scenes.length);
@@ -577,11 +581,15 @@ window.addEventListener('keydown', e => {
   if (e.key === 'n') requestSkip();
   if (e.key === 'f') { if (document.fullscreenElement) document.exitFullscreen(); else document.documentElement.requestFullscreen(); }
 });
+// Only the leader decides. A jump or skip that arrives mid-crossfade is queued and starts
+// when the fade ends, so a press is never dropped and a fade is never cut in half.
+let pendingJump = null;
 function jumpTo(name){
   const i = scenes.findIndex(s => s.name === name);
-  if (i < 0 || i === cur || nxt >= 0) return;
-  if (isLeader()) startFade(i);
-  else if (leaderId) syncSend(leaderId, { type:'jump', scene: name });
+  if (i < 0) return;
+  if (!isLeader()) { if (leaderId) syncSend(leaderId, { type:'jump', scene: name }); return; }
+  if (nxt >= 0) { pendingJump = name; return; }
+  if (i !== cur) startFade(i);
 }
 function setHold(on){
   if (!isLeader()) { if (leaderId) syncSend(leaderId, { type:'hold', on }); return; }
@@ -613,9 +621,10 @@ function setRoomStats(on){
   roomStats = on; if (!isControl) applyStats(on); syncBroadcastState(); panelUpdate();
 }
 function requestSkip(){
-  if (scenes.length < 2 || nxt >= 0) return;
-  if (isLeader()) startFade((cur + 1) % scenes.length);
-  else if (leaderId) syncSend(leaderId, { type:'skip' });
+  if (scenes.length < 2) return;
+  if (!isLeader()) { if (leaderId) syncSend(leaderId, { type:'skip' }); return; }
+  if (nxt >= 0) { pendingJump = scenes[(nxt + 1) % scenes.length].name; return; }
+  startFade((cur + 1) % scenes.length);
 }
 
 // ===========================================================================
